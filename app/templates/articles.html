@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Articles</h1>
+
+<form class="search" method="get" action="/articles">
+  <input type="text" name="query" placeholder="Search the knowledge base..." value="{{ query }}" />
+  <select name="category">
+    {% for item in categories %}
+      <option value="{{ item }}" {% if item == category %}selected{% endif %}>{{ item.replace('_', ' ').title() }}</option>
+    {% endfor %}
+  </select>
+  <button class="button" type="submit">Search</button>
+</form>
+
+{% if error %}
+  <p class="error">{{ error }}</p>
+{% endif %}
+
+  {% if query %}
+  <h2>Results for "{{ query }}"</h2>
+  {% if results %}
+    <div class="cards">
+      {% for item in results %}
+        <a class="card" href="/articles/{{ item.article.id }}">
+          <h3 class="clamp-2">{{ item.article.title }}</h3>
+          <div class="meta">
+            <span class="chip">{{ item.article.metadata_.get('category', 'uncategorized') }}</span>
+            {% if item.similarity is not none %}
+              <span class="score">Similarity {{ '%.3f' | format(item.similarity) }}</span>
+            {% endif %}
+            {% if item.semantic_score is not none %}
+              <span class="score secondary">Semantic {{ '%.3f' | format(item.semantic_score) }}</span>
+            {% endif %}
+            {% if item.lexical_score is not none %}
+              <span class="score secondary">Lexical {{ '%.3f' | format(item.lexical_score) }}</span>
+            {% endif %}
+          </div>
+          <p class="summary clamp-2">{{ item.article.summary }}</p>
+          <p class="snippet clamp-3">{{ item.snippet }}</p>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>No matching articles found.</p>
+  {% endif %}
+{% else %}
+  {% if articles %}
+    <div class="cards">
+      {% for article in articles %}
+        <a class="card" href="/articles/{{ article.id }}">
+          <h2 class="clamp-2">{{ article.title }}</h2>
+          <div class="meta">
+            <span class="chip">{{ article.metadata_.get('category', 'uncategorized') }}</span>
+            <span>{{ article.created_at }}</span>
+          </div>
+          <p class="summary clamp-2">{{ article.summary }}</p>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>No articles yet.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

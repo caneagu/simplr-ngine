@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>{{ article.title }}</h1>
+<p class="summary">{{ article.summary }}</p>
+
+<div class="actions">
+  <a class="button" href="/articles/{{ article.id }}/edit">Edit</a>
+  <form method="post" action="/articles/{{ article.id }}/delete" onsubmit="return confirm('Delete this article?');">
+    <button class="button danger" type="submit">Delete</button>
+  </form>
+</div>
+
+<section>
+  <h3>Classification</h3>
+  <div class="chip">{{ article.metadata_.get('category', 'uncategorized') }}</div>
+</section>
+
+<section>
+  <h3>Extracted Metadata</h3>
+  <pre>{{ article.metadata_.get('extracted', {}) | tojson(indent=2) }}</pre>
+</section>
+
+<section>
+  <h3>Metadata</h3>
+  <pre>{{ article.metadata_ | tojson(indent=2) }}</pre>
+</section>
+
+<section>
+  <h3>Content</h3>
+  <pre>{{ article.content_text }}</pre>
+</section>
+{% endblock %}

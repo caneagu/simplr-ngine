@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="chat-layout">
+  <section class="chat-panel">
+    <header class="chat-header">
+      <h1>Knowledge Chat</h1>
+      <p>Ask questions and get answers grounded in your articles.</p>
+    </header>
+
+    <div class="chat-thread" id="chat-thread">
+      <div class="chat-bubble assistant">
+        <p>Hi! Ask me anything about your knowledge base.</p>
+      </div>
+    </div>
+
+    <form class="chat-form" id="chat-form">
+      <textarea id="chat-input" name="question" rows="3" placeholder="Ask a question..."></textarea>
+      <div class="chat-actions">
+        <button class="button" type="submit">Ask</button>
+      </div>
+    </form>
+
+    <p class="error" id="chat-error" style="display:none;"></p>
+  </section>
+
+  <aside class="chat-sidebar">
+    <h2>References</h2>
+    <ul id="chat-refs">
+      <li class="empty">No references yet.</li>
+    </ul>
+  </aside>
+</div>
+
+<script>
+  const form = document.getElementById('chat-form');
+  const input = document.getElementById('chat-input');
+  const thread = document.getElementById('chat-thread');
+  const refsList = document.getElementById('chat-refs');
+  const errorBox = document.getElementById('chat-error');
+
+  function addBubble(text, role) {
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${role}`;
+    const p = document.createElement('p');
+    p.textContent = text;
+    bubble.appendChild(p);
+    thread.appendChild(bubble);
+    thread.scrollTop = thread.scrollHeight;
+    return bubble;
+  }
+
+  function setError(message) {
+    if (!message) {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+      return;
+    }
+    errorBox.style.display = 'block';
+    errorBox.textContent = message;
+  }
+
+  function updateRefs(refs) {
+    refsList.innerHTML = '';
+    if (!refs || refs.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'empty';
+      li.textContent = 'No references yet.';
+      refsList.appendChild(li);
+      return;
+    }
+    refs.forEach(ref => {
+      const li = document.createElement('li');
+      const link = document.createElement('a');
+      link.href = `/articles/${ref.id}`;
+      link.textContent = ref.title;
+      li.appendChild(link);
+      refsList.appendChild(li);
+    });
+  }
+
+  async function streamAnswer(question) {
+    setError('');
+    const userBubble = addBubble(question, 'user');
+    const answerBubble = addBubble('', 'assistant');
+
+    const response = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      setError(errorText);
+      answerBubble.remove();
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let answerText = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\\n\\n');
+      buffer = parts.pop();
+      for (const part of parts) {
+        const lines = part.split('\\n');
+        let event = 'message';
+        let data = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            event = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            data += line.slice(6);
+          }
+        }
+
+        if (event === 'refs') {
+          try {
+            updateRefs(JSON.parse(data));
+          } catch {}
+        } else if (event === 'answer') {
+          try {
+            const token = JSON.parse(data);
+            answerText += token;
+            answerBubble.querySelector('p').textContent = answerText;
+          } catch {}
+        } else if (event === 'done') {
+          return;
+        }
+      }
+    }
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const question = input.value.trim();
+    if (!question) return;
+    input.value = '';
+    await streamAnswer(question);
+  });
+</script>
+{% endblock %}

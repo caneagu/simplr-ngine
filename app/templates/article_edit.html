@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Edit Article</h1>
+
+<form method="post" class="form">
+  <label>
+    Title
+    <input type="text" name="title" value="{{ article.title }}" />
+  </label>
+
+  <label>
+    Summary
+    <textarea name="summary" rows="6">{{ article.summary }}</textarea>
+  </label>
+
+  <label>
+    Metadata (JSON)
+    <textarea name="metadata_json" rows="8">{{ article.metadata_ | tojson(indent=2) }}</textarea>
+  </label>
+
+  <button class="button" type="submit">Save</button>
+</form>
+{% endblock %}

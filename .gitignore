@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenv (project-local)
+.Python
+bin/
+lib/
+pyvenv.cfg
+
+# Env
+.env
+.env.*
+
+# App data
+storage/
+
+# OS
+.DS_Store
+
+# Misc
+CACHEDIR.TAG
