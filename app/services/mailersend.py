@@ -20,6 +20,8 @@ class InboundEmail:
     subject: str
     text: str
     attachments: list[InboundAttachment]
+    message_id: Optional[str] = None
+    inbound_id: Optional[str] = None
 
 
 def _html_to_text(html: str) -> str:
@@ -92,6 +94,13 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
     if not text and html:
         text = _html_to_text(html)
 
+    headers = data.get("headers") if isinstance(data, dict) else {}
+
+    message_id = None
+    if isinstance(headers, dict):
+        message_id = headers.get("Message-ID") or headers.get("Message-Id")
+    inbound_id = data.get("id") if isinstance(data, dict) else None
+
     attachments_payload = _first_value(data, ["attachments", "attachment", "files"]) or []
     attachments_data = _normalize_attachments(attachments_payload)
 
@@ -116,4 +125,11 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
             )
         )
 
-    return InboundEmail(sender=sender, subject=str(subject), text=str(text), attachments=attachments)
+    return InboundEmail(
+        sender=sender,
+        subject=str(subject),
+        text=str(text),
+        attachments=attachments,
+        message_id=message_id,
+        inbound_id=inbound_id,
+    )

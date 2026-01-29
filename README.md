@@ -66,7 +66,7 @@ Run to insert 10 business-relevant sample articles:
 python scripts/seed_dummy.py
 ```
 
-- Embedding dimension in `scripts/init_db.sql` is set to 3072 for `text-embedding-3-large`.
+- Embedding dimension in `scripts/init_db.sql` is set to 1536 for `text-embedding-3-small`.
 - To change embedding model with different dimensions, update `EMBEDDING_DIM` in `.env` and the `vector(...)` column in `scripts/init_db.sql`.
 - MailerSend attachment payloads are expected to include base64 content for PDFs.
 - Hybrid search combines Postgres full-text ranking with vector similarity (ensure `scripts/init_db.sql` has been run).

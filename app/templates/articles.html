@@ -1,65 +1,88 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Articles</h1>
+<section class="rounded-2xl border border-gray-100 bg-white p-8 shadow-sm">
+  <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <div>
+      <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Knowledge Base</p>
+      <h1 class="text-3xl font-bold tracking-tight text-slate-900 md:text-4xl">Articles & insights</h1>
+      <p class="mt-2 max-w-2xl text-sm text-slate-500">Search, refine, and explore the documents powering your RAG answers.</p>
+    </div>
+    <div class="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-slate-500">
+      <span class="inline-flex h-2 w-2 rounded-full bg-blue-600"></span>
+      <span>Embedding pipeline active</span>
+    </div>
+  </div>
 
-<form class="search" method="get" action="/articles">
-  <input type="text" name="query" placeholder="Search the knowledge base..." value="{{ query }}" />
-  <select name="category">
-    {% for item in categories %}
-      <option value="{{ item }}" {% if item == category %}selected{% endif %}>{{ item.replace('_', ' ').title() }}</option>
-    {% endfor %}
-  </select>
-  <button class="button" type="submit">Search</button>
-</form>
+  <form class="mt-6 grid gap-4 md:grid-cols-[1.6fr_0.9fr_auto]" method="get" action="/articles">
+    <input
+      class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+      type="text"
+      name="query"
+      placeholder="Search the knowledge base..."
+      value="{{ query }}"
+    />
+    <select class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" name="category">
+      {% for item in categories %}
+        <option value="{{ item }}" {% if item == category %}selected{% endif %}>{{ item.replace('_', ' ').title() }}</option>
+      {% endfor %}
+    </select>
+    <button class="rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-slate-900/10 transition hover:bg-slate-800" type="submit">Search</button>
+  </form>
+</section>
 
 {% if error %}
-  <p class="error">{{ error }}</p>
+  <p class="mt-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{{ error }}</p>
 {% endif %}
 
-  {% if query %}
-  <h2>Results for "{{ query }}"</h2>
+{% if query %}
+  <div class="mt-10 flex items-center justify-between">
+    <h2 class="text-xl font-semibold">Results for “{{ query }}”</h2>
+    <span class="text-sm text-slate-500">{{ results|length }} matches</span>
+  </div>
   {% if results %}
-    <div class="cards">
+    <div class="mt-6 grid gap-6 md:grid-cols-2">
       {% for item in results %}
-        <a class="card" href="/articles/{{ item.article.id }}">
-          <h3 class="clamp-2">{{ item.article.title }}</h3>
-          <div class="meta">
-            <span class="chip">{{ item.article.metadata_.get('category', 'uncategorized') }}</span>
+        <a class="group rounded-2xl border border-gray-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-100 hover:shadow-md" href="/articles/{{ item.article.id }}">
+          <div class="flex items-center justify-between text-xs text-slate-400">
+            <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ item.article.metadata_.get('category', 'uncategorized') }}</span>
             {% if item.similarity is not none %}
-              <span class="score">Similarity {{ '%.3f' | format(item.similarity) }}</span>
-            {% endif %}
-            {% if item.semantic_score is not none %}
-              <span class="score secondary">Semantic {{ '%.3f' | format(item.semantic_score) }}</span>
-            {% endif %}
-            {% if item.lexical_score is not none %}
-              <span class="score secondary">Lexical {{ '%.3f' | format(item.lexical_score) }}</span>
+              <span class="font-semibold text-blue-600">Sim {{ '%.3f' | format(item.similarity) }}</span>
             {% endif %}
           </div>
-          <p class="summary clamp-2">{{ item.article.summary }}</p>
-          <p class="snippet clamp-3">{{ item.snippet }}</p>
+          <h3 class="mt-4 text-lg font-semibold text-slate-900 group-hover:text-slate-700">{{ item.article.title }}</h3>
+          <p class="mt-2 text-sm text-slate-500">{{ item.article.summary }}</p>
+          <div class="mt-4 flex flex-wrap gap-2 text-xs text-slate-500">
+            {% if item.semantic_score is not none %}
+              <span class="rounded-full border border-gray-200 px-3 py-1">Semantic {{ '%.3f' | format(item.semantic_score) }}</span>
+            {% endif %}
+            {% if item.lexical_score is not none %}
+              <span class="rounded-full border border-gray-200 px-3 py-1">Lexical {{ '%.3f' | format(item.lexical_score) }}</span>
+            {% endif %}
+          </div>
+          <p class="mt-4 text-sm text-slate-600">{{ item.snippet }}</p>
         </a>
       {% endfor %}
     </div>
   {% else %}
-    <p>No matching articles found.</p>
+    <p class="mt-6 text-sm text-slate-500">No matching articles found.</p>
   {% endif %}
 {% else %}
   {% if articles %}
-    <div class="cards">
+    <div class="mt-10 grid gap-6 md:grid-cols-2">
       {% for article in articles %}
-        <a class="card" href="/articles/{{ article.id }}">
-          <h2 class="clamp-2">{{ article.title }}</h2>
-          <div class="meta">
-            <span class="chip">{{ article.metadata_.get('category', 'uncategorized') }}</span>
+        <a class="group rounded-2xl border border-gray-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-100 hover:shadow-md" href="/articles/{{ article.id }}">
+          <div class="flex items-center justify-between text-xs text-slate-400">
+            <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ article.metadata_.get('category', 'uncategorized') }}</span>
             <span>{{ article.created_at }}</span>
           </div>
-          <p class="summary clamp-2">{{ article.summary }}</p>
+          <h2 class="mt-4 text-lg font-semibold text-slate-900 group-hover:text-slate-700">{{ article.title }}</h2>
+          <p class="mt-2 text-sm text-slate-500">{{ article.summary }}</p>
         </a>
       {% endfor %}
     </div>
   {% else %}
-    <p>No articles yet.</p>
+    <p class="mt-8 text-sm text-slate-500">No articles yet.</p>
   {% endif %}
 {% endif %}
 {% endblock %}

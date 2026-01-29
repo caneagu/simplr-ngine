@@ -6,10 +6,12 @@ import re
 import uuid
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+import markdown
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -17,7 +19,7 @@ from app.db import get_db
 from app.models import Article, Chunk
 from app.schemas import ArticleRead, ArticleUpdate
 from app.services.embeddings import embed_query
-from app.services.ingest import ingest_email
+from app.services.ingest import ingest_email, ingest_email_job
 from app.services.llm import answer_with_context, stream_answer_with_context
 from app.services.mailersend import parse_mailersend_payload
 
@@ -35,6 +37,16 @@ CHAT_MIN_LEXICAL = 0.08
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 templates = Jinja2Templates(directory="app/templates")
+
+
+def render_markdown(text: Optional[str]) -> Markup:
+    if not text:
+        return Markup("")
+    html = markdown.markdown(text, extensions=["extra", "nl2br", "sane_lists"])
+    return Markup(html)
+
+
+templates.env.filters["markdown"] = render_markdown
 
 def _keyword_terms(query: str) -> list[str]:
     terms = [t for t in re.split(r"\\W+", query.lower()) if len(t) >= 3]
@@ -84,23 +96,43 @@ def root() -> RedirectResponse:
     return RedirectResponse(url="/articles")
 
 
-@app.post("/webhooks/mailersend")
-def mailersend_webhook(payload: dict[str, Any], db: Session = Depends(get_db)):
+@app.post("/webhooks/mailersend", status_code=202)
+def mailersend_webhook(
+    payload: dict[str, Any],
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     inbound = parse_mailersend_payload(payload)
     if not inbound.text and not inbound.attachments:
         data = payload.get("data") or payload.get("message") or {}
         payload_keys = sorted(payload.keys())
         data_keys = sorted(data.keys()) if isinstance(data, dict) else []
         logger.warning("MailerSend payload missing content. keys=%s data_keys=%s", payload_keys, data_keys)
-        raise HTTPException(
-            status_code=400,
-            detail={"error": "No content in payload", "payload_keys": payload_keys, "data_keys": data_keys},
+        return {
+            "status": "ignored",
+            "detail": {"error": "No content in payload", "payload_keys": payload_keys, "data_keys": data_keys},
+        }
+
+    if inbound.message_id:
+        exists = (
+            db.query(Article)
+            .filter(Article.metadata_["message_id"].astext == inbound.message_id)
+            .first()
         )
-    try:
-        article = ingest_email(inbound, db)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"status": "ok", "article_id": str(article.id)}
+        if exists:
+            return {"status": "duplicate", "article_id": str(exists.id)}
+
+    if inbound.inbound_id:
+        exists = (
+            db.query(Article)
+            .filter(Article.metadata_["inbound_id"].astext == inbound.inbound_id)
+            .first()
+        )
+        if exists:
+            return {"status": "duplicate", "article_id": str(exists.id)}
+
+    background_tasks.add_task(ingest_email_job, inbound)
+    return {"status": "accepted"}
 
 
 @app.get("/api/articles", response_model=list[ArticleRead])

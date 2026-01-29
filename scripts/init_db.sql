@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     article_id uuid NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     chunk_index integer NOT NULL,
     content text NOT NULL,
-    embedding vector(3072) NOT NULL,
+    embedding vector(1536) NOT NULL,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now()
 );

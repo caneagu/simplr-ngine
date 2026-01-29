@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db import SessionLocal
 from app.models import Article, Chunk, Source
 from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
@@ -25,7 +26,12 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
             source_name="email",
             source_uri=None,
             raw_text=inbound.text,
-            metadata_={"sender": inbound.sender, "subject": inbound.subject},
+            metadata_={
+                "sender": inbound.sender,
+                "subject": inbound.subject,
+                "message_id": inbound.message_id,
+                "inbound_id": inbound.inbound_id,
+            },
         )
     ]
 
@@ -62,6 +68,8 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
             "subject": inbound.subject,
             "category": category,
             "extracted": extracted,
+            "message_id": inbound.message_id,
+            "inbound_id": inbound.inbound_id,
         },
     )
 
@@ -89,3 +97,11 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
     db.commit()
     db.refresh(article)
     return article
+
+
+def ingest_email_job(inbound: InboundEmail) -> None:
+    db = SessionLocal()
+    try:
+        ingest_email(inbound, db)
+    finally:
+        db.close()

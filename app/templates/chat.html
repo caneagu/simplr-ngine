@@ -1,33 +1,51 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="chat-layout">
-  <section class="chat-panel">
-    <header class="chat-header">
-      <h1>Knowledge Chat</h1>
-      <p>Ask questions and get answers grounded in your articles.</p>
+<div class="grid gap-6 lg:grid-cols-[1.6fr_0.8fr]">
+  <section class="rounded-2xl border border-gray-100 bg-white p-8 shadow-sm">
+    <header class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Knowledge Chat</p>
+        <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-900">Ask your RAG assistant</h1>
+        <p class="mt-2 text-sm text-slate-500">Get grounded answers, plus a live list of cited articles.</p>
+      </div>
+      <div class="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-slate-500">
+        Streaming mode enabled
+      </div>
     </header>
 
-    <div class="chat-thread" id="chat-thread">
-      <div class="chat-bubble assistant">
-        <p>Hi! Ask me anything about your knowledge base.</p>
+    <div class="mt-6 h-[28rem] overflow-y-auto rounded-2xl border border-gray-200 bg-gray-50 p-6" id="chat-thread">
+      <div class="flex">
+        <div class="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+          <p>Hi! Ask me anything about your knowledge base.</p>
+        </div>
       </div>
     </div>
 
-    <form class="chat-form" id="chat-form">
-      <textarea id="chat-input" name="question" rows="3" placeholder="Ask a question..."></textarea>
-      <div class="chat-actions">
-        <button class="button" type="submit">Ask</button>
+    <form class="mt-6 space-y-4" id="chat-form">
+      <textarea
+        class="w-full resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
+        id="chat-input"
+        name="question"
+        rows="3"
+        placeholder="Ask a question..."
+      ></textarea>
+      <div class="flex items-center justify-between">
+        <p class="text-xs text-slate-500">Shift + Enter for a new line</p>
+        <button class="rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-slate-900/10 transition hover:bg-slate-800" type="submit">Ask</button>
       </div>
     </form>
 
-    <p class="error" id="chat-error" style="display:none;"></p>
+    <p class="mt-4 hidden rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" id="chat-error"></p>
   </section>
 
-  <aside class="chat-sidebar">
-    <h2>References</h2>
-    <ul id="chat-refs">
-      <li class="empty">No references yet.</li>
+  <aside class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold">References</h2>
+      <span class="rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-600">Live</span>
+    </div>
+    <ul class="mt-6 space-y-3 text-sm text-slate-600" id="chat-refs">
+      <li class="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-slate-400">No references yet.</li>
     </ul>
   </aside>
 </div>
@@ -41,22 +59,32 @@
 
   function addBubble(text, role) {
     const bubble = document.createElement('div');
-    bubble.className = `chat-bubble ${role}`;
+    bubble.className = `max-w-[75%] rounded-lg px-4 py-3 text-sm leading-relaxed shadow-sm ${
+      role === 'user'
+        ? 'ml-auto bg-slate-900 text-white'
+        : 'border border-gray-200 bg-white text-slate-700'
+    }`;
     const p = document.createElement('p');
     p.textContent = text;
     bubble.appendChild(p);
-    thread.appendChild(bubble);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mt-4 flex';
+    if (role === 'user') {
+      wrapper.classList.add('justify-end');
+    }
+    wrapper.appendChild(bubble);
+    thread.appendChild(wrapper);
     thread.scrollTop = thread.scrollHeight;
     return bubble;
   }
 
   function setError(message) {
     if (!message) {
-      errorBox.style.display = 'none';
+      errorBox.classList.add('hidden');
       errorBox.textContent = '';
       return;
     }
-    errorBox.style.display = 'block';
+    errorBox.classList.remove('hidden');
     errorBox.textContent = message;
   }
 
@@ -64,7 +92,7 @@
     refsList.innerHTML = '';
     if (!refs || refs.length === 0) {
       const li = document.createElement('li');
-      li.className = 'empty';
+      li.className = 'rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-slate-400';
       li.textContent = 'No references yet.';
       refsList.appendChild(li);
       return;
@@ -72,6 +100,7 @@
     refs.forEach(ref => {
       const li = document.createElement('li');
       const link = document.createElement('a');
+      link.className = 'block rounded-lg border border-gray-200 bg-white px-4 py-3 transition hover:border-blue-100 hover:text-blue-600';
       link.href = `/articles/${ref.id}`;
       link.textContent = ref.title;
       li.appendChild(link);

@@ -4,17 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ title or "RAG Email MVP" }}</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        font-family: "Inter", sans-serif;
+      }
+    </style>
   </head>
-  <body>
-    <header class="topbar">
-      <div class="brand">RAG Email MVP</div>
-      <nav>
-        <a href="/articles">Articles</a>
-        <a href="/chat">Chat</a>
-      </nav>
+  <body class="bg-white text-slate-900 min-h-screen selection:bg-blue-100 selection:text-blue-900">
+    <header class="fixed left-0 top-0 z-50 w-full border-b border-gray-100 bg-white/90 px-6 py-4 backdrop-blur">
+      <div class="mx-auto flex w-full max-w-6xl items-center justify-between">
+        <div class="text-xl font-extrabold tracking-tighter lowercase select-none">
+          <span>simplr<span class="text-blue-600">.</span></span>
+        </div>
+        <nav class="flex items-center gap-2 text-sm font-medium">
+          <a class="rounded-lg border border-gray-200 bg-white px-4 py-2 transition hover:border-blue-200 hover:text-blue-600" href="/articles">Articles</a>
+          <a class="rounded-lg border border-gray-200 bg-white px-4 py-2 transition hover:border-blue-200 hover:text-blue-600" href="/chat">Chat</a>
+        </nav>
+      </div>
     </header>
-    <main class="content">
+    <main class="mx-auto w-full max-w-6xl px-6 pb-16 pt-24">
       {% block content %}{% endblock %}
     </main>
   </body>

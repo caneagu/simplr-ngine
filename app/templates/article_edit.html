@@ -1,24 +1,36 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Edit Article</h1>
+<section class="rounded-2xl border border-gray-100 bg-white p-8 shadow-sm">
+  <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <div>
+      <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Editor</p>
+      <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-900">Edit Article</h1>
+      <p class="mt-2 text-sm text-slate-500">Tidy up summaries and metadata before the next retrieval run.</p>
+    </div>
+    <a class="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium transition hover:border-blue-200 hover:text-blue-600" href="/articles/{{ article.id }}">Back to article</a>
+  </div>
 
-<form method="post" class="form">
-  <label>
-    Title
-    <input type="text" name="title" value="{{ article.title }}" />
-  </label>
+  <form method="post" class="mt-8 space-y-6">
+    <label class="block text-sm font-semibold text-slate-600">
+      Title
+      <input class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" type="text" name="title" value="{{ article.title }}" />
+    </label>
 
-  <label>
-    Summary
-    <textarea name="summary" rows="6">{{ article.summary }}</textarea>
-  </label>
+    <label class="block text-sm font-semibold text-slate-600">
+      Summary
+      <textarea class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" name="summary" rows="6">{{ article.summary }}</textarea>
+    </label>
 
-  <label>
-    Metadata (JSON)
-    <textarea name="metadata_json" rows="8">{{ article.metadata_ | tojson(indent=2) }}</textarea>
-  </label>
+    <label class="block text-sm font-semibold text-slate-600">
+      Metadata (JSON)
+      <textarea class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-xs shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" name="metadata_json" rows="10">{{ article.metadata_ | tojson(indent=2) }}</textarea>
+    </label>
 
-  <button class="button" type="submit">Save</button>
-</form>
+    <div class="flex items-center justify-end gap-3">
+      <a class="rounded-lg border border-gray-200 px-5 py-2 text-sm font-medium transition hover:border-blue-200 hover:text-blue-600" href="/articles/{{ article.id }}">Cancel</a>
+      <button class="rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-slate-900/10 transition hover:bg-slate-800" type="submit">Save changes</button>
+    </div>
+  </form>
+</section>
 {% endblock %}
