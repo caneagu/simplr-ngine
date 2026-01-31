@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% macro render_folder(nodes, active_id) %}
+  <ul class="space-y-2">
+    {% for node in nodes %}
+      <li>
+        <div
+          class="folder-item flex items-center justify-between rounded-lg px-3 py-2 text-sm transition hover:bg-slate-50 {% if active_id == node.id|string %}bg-slate-100 text-slate-900{% else %}text-slate-600{% endif %}"
+          data-folder-id="{{ node.id }}"
+          draggable="true"
+        >
+          <a class="flex-1" href="/files?folder_id={{ node.id }}">{{ node.name }}</a>
+          <form method="post" action="/files/folders/{{ node.id }}/delete" onsubmit="return confirm('Delete this folder?');">
+            <button class="text-xs text-slate-400 hover:text-rose-500" type="submit">Delete</button>
+          </form>
+        </div>
+        {% if node.children %}
+          <div class="ml-4 mt-2">
+            {{ render_folder(node.children, active_id) }}
+          </div>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+{% endmacro %}
+
+{% block content %}
+<section class="grid gap-6 lg:grid-cols-[280px_1fr]">
+  <aside class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold">Folders</h2>
+      <a class="text-xs text-slate-500 hover:text-slate-700" href="/files">Root</a>
+    </div>
+    <form class="mt-4 space-y-2" method="post" action="/files/folders">
+      <input class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" name="name" placeholder="New folder name" required />
+      {% if active_folder_id %}
+        <input type="hidden" name="parent_id" value="{{ active_folder_id }}" />
+      {% endif %}
+      <button class="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white">Create folder</button>
+    </form>
+    <div class="mt-6" id="folder-tree">
+      <div class="folder-item mb-3 rounded-lg px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50" data-folder-id="" draggable="true">
+        <a class="block" href="/files">Root</a>
+      </div>
+      {{ render_folder(folders, active_folder_id) }}
+    </div>
+  </aside>
+
+  <div class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+    <div class="flex items-center justify-between">
+      <div>
+        <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Files</p>
+        <h1 class="mt-2 text-2xl font-semibold text-slate-900">Knowledge Base Files</h1>
+      </div>
+      <div class="text-xs text-slate-500">Drag articles into folders</div>
+    </div>
+
+    <div class="mt-6 overflow-hidden rounded-xl border border-gray-100">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-gray-50 text-xs uppercase tracking-wide text-slate-500">
+          <tr>
+            <th class="px-4 py-3">Title</th>
+            <th class="px-4 py-3">Type</th>
+            <th class="px-4 py-3">Folder</th>
+            <th class="px-4 py-3">Updated</th>
+            <th class="px-4 py-3">Versions</th>
+            <th class="px-4 py-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for article in articles %}
+            <tr class="article-row hover:bg-slate-50" draggable="true" data-article-id="{{ article.id }}">
+              <td class="px-4 py-3">
+                <a class="font-medium text-slate-900 hover:text-blue-600" href="/articles/{{ article.id }}">{{ article.title }}</a>
+                <p class="mt-1 text-xs text-slate-500">{{ article.summary[:120] }}{% if article.summary|length > 120 %}...{% endif %}</p>
+              </td>
+              <td class="px-4 py-3 text-slate-600">{{ article.metadata_.get('doc_type', 'other') }}</td>
+              <td class="px-4 py-3 text-slate-600">{{ folder_paths.get(article.id, 'Root') }}</td>
+              <td class="px-4 py-3 text-slate-600">{{ article.updated_at }}</td>
+              <td class="px-4 py-3 text-slate-600">{{ version_counts.get(article.id, 0) }}</td>
+              <td class="px-4 py-3">
+                <a class="text-xs text-slate-500 hover:text-slate-800" href="/articles/{{ article.id }}/edit">Edit</a>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td class="px-4 py-6 text-slate-500" colspan="6">No articles here.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<script>
+  const rows = document.querySelectorAll('.article-row');
+  const folders = document.querySelectorAll('.folder-item');
+  let draggedFolderId = null;
+
+  rows.forEach(row => {
+    row.addEventListener('dragstart', (event) => {
+      draggedFolderId = null;
+      event.dataTransfer.setData('text/plain', row.dataset.articleId);
+    });
+  });
+
+  folders.forEach(folder => {
+    folder.addEventListener('dragstart', (event) => {
+      draggedFolderId = folder.dataset.folderId || '';
+      event.dataTransfer.setData('text/plain', draggedFolderId);
+    });
+    folder.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      folder.classList.add('bg-blue-50');
+    });
+    folder.addEventListener('dragleave', () => {
+      folder.classList.remove('bg-blue-50');
+    });
+    folder.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      folder.classList.remove('bg-blue-50');
+      const droppedId = event.dataTransfer.getData('text/plain');
+      if (!droppedId) return;
+      if (draggedFolderId !== null) {
+        if (droppedId === folder.dataset.folderId) return;
+        await fetch(`/files/folders/${droppedId}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: folder.dataset.folderId || null })
+        });
+      } else {
+        await fetch(`/files/articles/${droppedId}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_id: folder.dataset.folderId || null })
+        });
+      }
+      window.location.reload();
+    });
+  });
+</script>
+{% endblock %}

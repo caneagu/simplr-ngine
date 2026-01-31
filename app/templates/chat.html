@@ -47,6 +47,10 @@
     <ul class="mt-6 space-y-3 text-sm text-slate-600" id="chat-refs">
       <li class="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-slate-400">No references yet.</li>
     </ul>
+    <details class="mt-6 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
+      <summary class="cursor-pointer text-sm font-medium text-slate-600">Context sent to the LLM</summary>
+      <pre class="mt-3 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-slate-500" id="chat-context">No context yet.</pre>
+    </details>
   </aside>
 </div>
 
@@ -56,6 +60,7 @@
   const thread = document.getElementById('chat-thread');
   const refsList = document.getElementById('chat-refs');
   const errorBox = document.getElementById('chat-error');
+  const contextBox = document.getElementById('chat-context');
 
   function addBubble(text, role) {
     const bubble = document.createElement('div');
@@ -153,6 +158,18 @@
           try {
             updateRefs(JSON.parse(data));
           } catch {}
+        } else if (event === 'context') {
+          const payload = (data || '').trim();
+          if (!payload) {
+            contextBox.textContent = 'No context.';
+          } else {
+            try {
+              const parsed = JSON.parse(payload);
+              contextBox.textContent = parsed || 'No context.';
+            } catch {
+              contextBox.textContent = payload;
+            }
+          }
         } else if (event === 'answer') {
           try {
             const token = JSON.parse(data);

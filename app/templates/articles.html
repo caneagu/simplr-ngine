@@ -51,7 +51,7 @@
             {% endif %}
           </div>
           <h3 class="mt-4 text-lg font-semibold text-slate-900 group-hover:text-slate-700">{{ item.article.title }}</h3>
-          <p class="mt-2 text-sm text-slate-500">{{ item.article.summary }}</p>
+          <div class="summary-clamp mt-2 text-sm text-slate-500">{{ item.article.summary | markdown }}</div>
           <div class="mt-4 flex flex-wrap gap-2 text-xs text-slate-500">
             {% if item.semantic_score is not none %}
               <span class="rounded-full border border-gray-200 px-3 py-1">Semantic {{ '%.3f' | format(item.semantic_score) }}</span>
@@ -77,7 +77,7 @@
             <span>{{ article.created_at }}</span>
           </div>
           <h2 class="mt-4 text-lg font-semibold text-slate-900 group-hover:text-slate-700">{{ article.title }}</h2>
-          <p class="mt-2 text-sm text-slate-500">{{ article.summary }}</p>
+          <div class="summary-clamp mt-2 text-sm text-slate-500">{{ article.summary | markdown }}</div>
         </a>
       {% endfor %}
     </div>

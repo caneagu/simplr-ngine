@@ -17,8 +17,21 @@
       <div class="mt-4 text-sm leading-relaxed text-slate-600 [&_p]:mb-3 [&_ul]:ml-5 [&_ul]:list-disc [&_ol]:ml-5 [&_ol]:list-decimal [&_strong]:text-slate-900">
         {{ article.summary | markdown }}
       </div>
+      {% if sources %}
+        <div class="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+          <span class="text-xs uppercase tracking-[0.2em] text-slate-400">Originals</span>
+          {% for source in sources %}
+            <a class="rounded-full border border-slate-200 px-3 py-1 text-xs transition hover:border-blue-200 hover:text-blue-600" href="/articles/{{ article.id }}/sources/{{ source.id }}">
+              {{ source.name }}
+            </a>
+          {% endfor %}
+        </div>
+      {% endif %}
       <div class="mt-6 flex flex-wrap items-center gap-3 text-xs text-slate-500">
         <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ article.metadata_.get('category', 'uncategorized') }}</span>
+        <a class="text-slate-500 hover:text-slate-700" href="/files{% if folder_id %}?folder_id={{ folder_id }}{% endif %}">
+          Folder: {{ folder_path }}
+        </a>
         <span>Created {{ article.created_at }}</span>
       </div>
     </div>
@@ -29,7 +42,7 @@
   <div class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
     <div class="flex flex-wrap gap-2 text-sm">
       <button class="tab-button rounded-lg border border-blue-100 bg-blue-50 px-4 py-2 font-medium text-blue-600 transition" data-tab="classification" type="button">Classification</button>
-      <button class="tab-button rounded-lg border border-gray-200 px-4 py-2 font-medium text-slate-600 transition hover:border-blue-100 hover:text-blue-600" data-tab="extracted" type="button">Extracted Metadata</button>
+      <button class="tab-button rounded-lg border border-gray-200 px-4 py-2 font-medium text-slate-600 transition hover:border-blue-100 hover:text-blue-600" data-tab="insights" type="button">Insights</button>
       <button class="tab-button rounded-lg border border-gray-200 px-4 py-2 font-medium text-slate-600 transition hover:border-blue-100 hover:text-blue-600" data-tab="metadata" type="button">Metadata</button>
       <button class="tab-button rounded-lg border border-gray-200 px-4 py-2 font-medium text-slate-600 transition hover:border-blue-100 hover:text-blue-600" data-tab="content" type="button">Content</button>
     </div>
@@ -39,9 +52,19 @@
         <h3 class="text-sm font-semibold text-slate-600">Classification</h3>
         <div class="mt-4 inline-flex rounded-full bg-blue-50 px-4 py-2 text-sm text-blue-600">{{ article.metadata_.get('category', 'uncategorized') }}</div>
       </div>
-      <div class="tab-panel hidden" data-tab-panel="extracted">
-        <h3 class="text-sm font-semibold text-slate-600">Extracted Metadata</h3>
-        <pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-gray-50 p-4 text-xs text-slate-700">{{ article.metadata_.get('extracted', {}) | tojson(indent=2) }}</pre>
+      <div class="tab-panel hidden" data-tab-panel="insights">
+        <h3 class="text-sm font-semibold text-slate-600">Insights</h3>
+        <pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-gray-50 p-4 text-xs text-slate-700">
+{{ {
+  "doc_type": article.metadata_.get("doc_type"),
+  "document_date": article.metadata_.get("document_date"),
+  "language": article.metadata_.get("language"),
+  "tags": article.metadata_.get("tags", []),
+  "entities": article.metadata_.get("entities", {}),
+  "date_mentions": article.metadata_.get("date_mentions", []),
+  "confidence": article.metadata_.get("confidence")
+} | tojson(indent=2) }}
+        </pre>
       </div>
       <div class="tab-panel hidden" data-tab-panel="metadata">
         <h3 class="text-sm font-semibold text-slate-600">Metadata</h3>

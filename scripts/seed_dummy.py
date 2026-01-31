@@ -4,7 +4,7 @@ from datetime import datetime
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Article, Chunk, Source
+from app.models import Article, Chunk, Source, User
 from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
 
@@ -17,6 +17,7 @@ def _embed_or_zero(chunks: list[str]) -> list[list[float]]:
 
 
 def seed_dummy_articles() -> None:
+    seed_email = "seed@datastore.local"
     entries = [
         {
             "title": "Q2 Support Escalation Review",
@@ -92,8 +93,14 @@ def seed_dummy_articles() -> None:
 
     db = SessionLocal()
     try:
+        user = db.query(User).filter(User.email == seed_email).first()
+        if not user:
+            user = User(email=seed_email)
+            db.add(user)
+            db.flush()
         for entry in entries:
             article = Article(
+                owner_id=user.id,
                 title=entry["title"],
                 summary=entry["summary"],
                 content_text=entry["content"],

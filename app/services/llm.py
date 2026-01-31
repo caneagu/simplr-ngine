@@ -72,19 +72,34 @@ def summarize_text(text: str) -> str:
 def categorize_and_extract(text: str) -> dict:
     llm = get_llm()
     if llm is None:
-        return {"category": "uncategorized", "metadata": {}}
+        return {
+            "category": "uncategorized",
+            "doc_type": "other",
+            "document_date": None,
+            "language": "en",
+            "tags": [],
+            "entities": {"people": [], "orgs": [], "locations": []},
+            "date_mentions": [],
+            "confidence": None,
+        }
 
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "You are a classifier. Return JSON only with keys: category, metadata.",
+                "You are a classifier. Return JSON only with keys: "
+                "category, doc_type, document_date, language, tags, entities, date_mentions, confidence.",
             ),
             (
                 "user",
                 "Classify the content into one of: support_tickets, policies, "
-                "documentation, projects, other. Extract metadata fields if present: "
-                "people (array), dates (array), timeline (string), progress (string). "
+                "documentation, projects, other. "
+                "Set doc_type to one of: report, memo, policy, ticket, meeting_notes, other. "
+                "Set document_date to the single most relevant date (YYYY-MM-DD) if present. "
+                "Set language (e.g., en). "
+                "Extract entities with keys: people (array), orgs (array), locations (array). "
+                "Extract tags (array) and date_mentions (array of YYYY-MM or YYYY-MM-DD). "
+                "Set confidence from 0 to 1. "
                 "Return JSON only.\n\nContent:\n{content}",
             ),
         ]
@@ -93,11 +108,27 @@ def categorize_and_extract(text: str) -> dict:
     raw = chain.invoke({"content": text}).strip()
     parsed = _safe_json_parse(raw)
     if not parsed:
-        return {"category": "uncategorized", "metadata": {}}
+        return {
+            "category": "uncategorized",
+            "doc_type": "other",
+            "document_date": None,
+            "language": "en",
+            "tags": [],
+            "entities": {"people": [], "orgs": [], "locations": []},
+            "date_mentions": [],
+            "confidence": None,
+        }
 
-    category = parsed.get("category") or "uncategorized"
-    metadata = parsed.get("metadata") or {}
-    return {"category": category, "metadata": metadata}
+    return {
+        "category": parsed.get("category") or "uncategorized",
+        "doc_type": parsed.get("doc_type") or "other",
+        "document_date": parsed.get("document_date"),
+        "language": parsed.get("language") or "en",
+        "tags": parsed.get("tags") or [],
+        "entities": parsed.get("entities") or {"people": [], "orgs": [], "locations": []},
+        "date_mentions": parsed.get("date_mentions") or [],
+        "confidence": parsed.get("confidence"),
+    }
 
 
 def answer_with_context(question: str, context: str) -> str:
@@ -110,7 +141,9 @@ def answer_with_context(question: str, context: str) -> str:
             (
                 "system",
                 "You answer questions using the provided knowledge base context. "
-                "If the answer is not in the context, say you don't know.",
+                "If the answer is not in the context, provide a best-effort response "
+                "based on the closest relevant context and start with the disclaimer: "
+                "'Closest match in the knowledge base:'. If no context is provided, say you don't know.",
             ),
             (
                 "user",
@@ -132,7 +165,9 @@ def stream_answer_with_context(question: str, context: str, history_text: str):
             (
                 "system",
                 "You answer questions using the provided knowledge base context. "
-                "If the answer is not in the context, say you don't know.",
+                "If the answer is not in the context, provide a best-effort response "
+                "based on the closest relevant context and start with the disclaimer: "
+                "'Closest match in the knowledge base:'. If no context is provided, say you don't know.",
             ),
             ("system", "Conversation history:\n{history}"),
             (

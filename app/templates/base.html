@@ -13,21 +13,53 @@
       body {
         font-family: "Inter", sans-serif;
       }
+      .summary-clamp {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .summary-clamp p {
+        margin: 0;
+      }
+      .summary-clamp ul,
+      .summary-clamp ol {
+        margin: 0;
+        padding-left: 1.25rem;
+      }
     </style>
   </head>
   <body class="bg-white text-slate-900 min-h-screen selection:bg-blue-100 selection:text-blue-900">
     <header class="fixed left-0 top-0 z-50 w-full border-b border-gray-100 bg-white/90 px-6 py-4 backdrop-blur">
       <div class="mx-auto flex w-full max-w-6xl items-center justify-between">
-        <div class="text-xl font-extrabold tracking-tighter lowercase select-none">
-          <span>simplr<span class="text-blue-600">.</span></span>
+        <div class="flex items-center gap-6">
+          <div class="text-xl font-extrabold tracking-tighter lowercase select-none">
+            <span>simplr<span class="text-blue-600">.</span></span>
+          </div>
+          <nav class="flex items-center gap-4 text-sm font-medium text-slate-600">
+            <a class="transition hover:text-slate-900" href="/articles">Articles</a>
+            <a class="transition hover:text-slate-900" href="/files">Files</a>
+            <a class="transition hover:text-slate-900" href="/chat">Chat</a>
+          </nav>
         </div>
-        <nav class="flex items-center gap-2 text-sm font-medium">
-          <a class="rounded-lg border border-gray-200 bg-white px-4 py-2 transition hover:border-blue-200 hover:text-blue-600" href="/articles">Articles</a>
-          <a class="rounded-lg border border-gray-200 bg-white px-4 py-2 transition hover:border-blue-200 hover:text-blue-600" href="/chat">Chat</a>
-        </nav>
+        <div class="flex items-center gap-3 text-sm text-slate-500">
+          {% if current_user %}
+            <span class="hidden md:inline">{{ current_user.email }}</span>
+            <form action="/logout" method="post">
+              <button class="text-slate-600 transition hover:text-slate-900" type="submit">Logout</button>
+            </form>
+          {% else %}
+            <a class="text-slate-600 transition hover:text-slate-900" href="/login">Login</a>
+          {% endif %}
+        </div>
       </div>
     </header>
     <main class="mx-auto w-full max-w-6xl px-6 pb-16 pt-24">
+      {% if current_user and session_expires_in_days is not none %}
+        <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Session expires in {{ session_expires_in_days }} day{% if session_expires_in_days != 1 %}s{% endif %}.
+        </div>
+      {% endif %}
       {% block content %}{% endblock %}
     </main>
   </body>

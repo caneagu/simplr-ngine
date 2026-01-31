@@ -2,23 +2,35 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 import markdown
-from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
-from app.models import Article, Chunk
+from app.models import Article, ArticleVersion, Chunk, Folder, MagicLinkToken, SessionToken, Source, User
 from app.schemas import ArticleRead, ArticleUpdate
+from app.services.auth import (
+    generate_token,
+    hash_token,
+    magiclink_expiry,
+    normalize_email,
+    now_utc,
+    session_expiry,
+)
 from app.services.embeddings import embed_query
+from app.services.emailer import send_magic_link
 from app.services.ingest import ingest_email, ingest_email_job
 from app.services.llm import answer_with_context, stream_answer_with_context
 from app.services.mailersend import parse_mailersend_payload
@@ -33,6 +45,8 @@ CHAT_MEMORY: dict[str, list[dict[str, str]]] = {}
 CHAT_MEMORY_LIMIT = 6
 CHAT_MIN_SEMANTIC = 0.78
 CHAT_MIN_LEXICAL = 0.08
+SESSION_COOKIE = "rag_session"
+CHAT_ARTICLE_LIMIT = 3
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -47,6 +61,68 @@ def render_markdown(text: Optional[str]) -> Markup:
 
 
 templates.env.filters["markdown"] = render_markdown
+
+
+def _get_current_session(request: Request, db: Session) -> Optional[SessionToken]:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    token_hash = hash_token(token)
+    session = db.query(SessionToken).filter(SessionToken.token_hash == token_hash).first()
+    if not session:
+        return None
+    if session.expires_at < now_utc():
+        db.delete(session)
+        db.commit()
+        return None
+    session.last_seen_at = now_utc()
+    db.add(session)
+    db.commit()
+    return session
+
+
+def _get_session_and_user(request: Request, db: Session) -> tuple[Optional[SessionToken], Optional[User]]:
+    session = _get_current_session(request, db)
+    return session, session.user if session else None
+
+
+def _get_current_user(request: Request, db: Session) -> Optional[User]:
+    session = _get_current_session(request, db)
+    return session.user if session else None
+
+
+def _require_user_api(request: Request, db: Session) -> User:
+    user = _get_current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required")
+    return user
+
+
+def _ensure_user_ui(request: Request, db: Session) -> Optional[User]:
+    return _get_current_user(request, db)
+
+
+def _session_expires_in_days(session: Optional[SessionToken]) -> Optional[int]:
+    if not session:
+        return None
+    delta = session.expires_at - now_utc()
+    seconds = max(0, int(delta.total_seconds()))
+    return max(0, math.ceil(seconds / 86400))
+
+
+def _template_context(
+    request: Request,
+    current_user: Optional[User],
+    session: Optional[SessionToken],
+    **kwargs: Any,
+) -> dict[str, Any]:
+    context = {
+        "request": request,
+        "current_user": current_user,
+        "session_expires_in_days": _session_expires_in_days(session),
+    }
+    context.update(kwargs)
+    return context
 
 def _keyword_terms(query: str) -> list[str]:
     terms = [t for t in re.split(r"\\W+", query.lower()) if len(t) >= 3]
@@ -68,11 +144,102 @@ def _keyword_boost(terms: list[str], text: str) -> float:
     return min(0.15, 0.03 * matches)
 
 
-def _build_context(chunks: list[tuple[Chunk, Article]]) -> str:
+def _order_articles(article_ids: list[uuid.UUID], articles: list[Article]) -> list[Article]:
+    by_id = {article.id: article for article in articles}
+    return [by_id[article_id] for article_id in article_ids if article_id in by_id]
+
+
+def _build_context(articles: list[Article]) -> str:
     parts = []
-    for chunk, article in chunks:
-        parts.append(f"Title: {article.title}\nExcerpt: {chunk.content}")
+    for article in articles:
+        summary = article.summary or ""
+        content = article.content_text or ""
+        folder_path = article.metadata_.get("folder_path") or "Root"
+        parts.append(
+            "\n".join(
+                [
+                    f"Title: {article.title}",
+                    f"Folder: {folder_path}",
+                    "Summary:",
+                    summary,
+                    "Full content:",
+                    content,
+                ]
+            )
+        )
     return "\n\n".join(parts)
+
+
+def _build_folder_tree(folders: list[Folder]) -> list[dict[str, Any]]:
+    by_parent: dict[Optional[uuid.UUID], list[Folder]] = {}
+    for folder in folders:
+        by_parent.setdefault(folder.parent_id, []).append(folder)
+    for items in by_parent.values():
+        items.sort(key=lambda f: f.name.lower())
+
+    def build(parent_id: Optional[uuid.UUID]) -> list[dict[str, Any]]:
+        nodes = []
+        for folder in by_parent.get(parent_id, []):
+            nodes.append(
+                {
+                    "id": folder.id,
+                    "name": folder.name,
+                    "children": build(folder.id),
+                }
+            )
+        return nodes
+
+    return build(None)
+
+
+def _folder_paths_map(folders: list[Folder]) -> dict[uuid.UUID, str]:
+    by_id = {folder.id: folder for folder in folders}
+    cache: dict[uuid.UUID, str] = {}
+
+    def build_path(folder: Folder, seen: set[uuid.UUID]) -> str:
+        if folder.id in cache:
+            return cache[folder.id]
+        if folder.id in seen:
+            return folder.name
+        seen.add(folder.id)
+        if folder.parent_id and folder.parent_id in by_id:
+            parent_path = build_path(by_id[folder.parent_id], seen)
+            path = f"{parent_path}/{folder.name}"
+        else:
+            path = folder.name
+        cache[folder.id] = path
+        return path
+
+    for folder in folders:
+        build_path(folder, set())
+    return cache
+
+
+def _resolve_folder_path(db: Session, folder_id: Optional[uuid.UUID]) -> Optional[str]:
+    if not folder_id:
+        return None
+    folder = db.get(Folder, folder_id)
+    if not folder:
+        return None
+    folders = db.query(Folder).filter(Folder.owner_id == folder.owner_id).all()
+    paths = _folder_paths_map(folders)
+    return paths.get(folder_id)
+
+
+def _sync_article_folder_metadata(db: Session, owner_id: uuid.UUID) -> None:
+    folders = db.query(Folder).filter(Folder.owner_id == owner_id).all()
+    folder_paths = _folder_paths_map(folders)
+    articles = db.query(Article).filter(Article.owner_id == owner_id).all()
+    for article in articles:
+        if article.metadata_ is None:
+            article.metadata_ = {}
+        if article.folder_id and article.folder_id in folder_paths:
+            article.metadata_["folder_id"] = str(article.folder_id)
+            article.metadata_["folder_path"] = folder_paths[article.folder_id]
+        else:
+            article.metadata_["folder_id"] = None
+            article.metadata_["folder_path"] = "Root"
+        db.add(article)
 
 
 def _get_session_id(request: Request) -> str:
@@ -94,6 +261,114 @@ def _render_history(messages: list[dict[str, str]]) -> str:
 @app.get("/", response_class=HTMLResponse)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/articles")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_ui(request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if current_user:
+        return RedirectResponse(url="/articles", status_code=303)
+    return templates.TemplateResponse(
+        "login.html",
+        _template_context(request, None, session, message=None, error=None, resend_email=None),
+    )
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login_request(request: Request, email: str = Form(...), db: Session = Depends(get_db)):
+    normalized = normalize_email(email)
+    user = db.query(User).filter(User.email == normalized).first()
+    if user:
+        token = generate_token()
+        token_hash = hash_token(token)
+        db.add(
+            MagicLinkToken(
+                user_id=user.id,
+                token_hash=token_hash,
+                expires_at=magiclink_expiry(),
+            )
+        )
+        db.commit()
+        magic_link = f"{settings.app_base_url.rstrip('/')}/auth/callback?token={token}"
+        try:
+            send_magic_link(normalized, magic_link)
+        except RuntimeError as exc:
+            return templates.TemplateResponse(
+                "login.html",
+                _template_context(request, None, None, message=None, error=str(exc), resend_email=normalized),
+            )
+
+    return templates.TemplateResponse(
+        "login.html",
+        _template_context(
+            request,
+            None,
+            None,
+            message="If that email has articles, a sign-in link is on the way.",
+            error=None,
+            resend_email=normalized,
+        ),
+    )
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+def auth_callback(request: Request, token: str, db: Session = Depends(get_db)):
+    token_hash = hash_token(token)
+    magic_link = (
+        db.query(MagicLinkToken)
+        .filter(MagicLinkToken.token_hash == token_hash)
+        .first()
+    )
+    if not magic_link or magic_link.expires_at < now_utc() or magic_link.used_at:
+        return templates.TemplateResponse(
+            "login.html",
+            _template_context(
+                request,
+                None,
+                None,
+                message=None,
+                error="This sign-in link is invalid or expired.",
+                resend_email=None,
+            ),
+        )
+
+    magic_link.used_at = now_utc()
+    db.add(magic_link)
+    session_token = generate_token()
+    db.add(
+        SessionToken(
+            user_id=magic_link.user_id,
+            token_hash=hash_token(session_token),
+            expires_at=session_expiry(),
+        )
+    )
+    db.commit()
+
+    response = RedirectResponse(url="/articles", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_token,
+        httponly=True,
+        secure=settings.cookie_secure,
+        max_age=60 * 60 * 24 * settings.session_days,
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/logout")
+def logout(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get(SESSION_COOKIE)
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    if not token:
+        return response
+    token_hash = hash_token(token)
+    session = db.query(SessionToken).filter(SessionToken.token_hash == token_hash).first()
+    if session:
+        db.delete(session)
+        db.commit()
+    return response
 
 
 @app.post("/webhooks/mailersend", status_code=202)
@@ -136,24 +411,44 @@ def mailersend_webhook(
 
 
 @app.get("/api/articles", response_model=list[ArticleRead])
-def list_articles(db: Session = Depends(get_db)):
-    articles = db.query(Article).order_by(Article.created_at.desc()).all()
+def list_articles(request: Request, db: Session = Depends(get_db)):
+    user = _require_user_api(request, db)
+    articles = (
+        db.query(Article)
+        .filter(Article.owner_id == user.id)
+        .order_by(Article.created_at.desc())
+        .all()
+    )
     return articles
 
 
 @app.get("/api/articles/{article_id}", response_model=ArticleRead)
-def get_article(article_id: str, db: Session = Depends(get_db)):
+def get_article(article_id: str, request: Request, db: Session = Depends(get_db)):
+    user = _require_user_api(request, db)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Article not found")
     return article
 
 
 @app.put("/api/articles/{article_id}", response_model=ArticleRead)
-def update_article(article_id: str, payload: ArticleUpdate, db: Session = Depends(get_db)):
+def update_article(article_id: str, payload: ArticleUpdate, request: Request, db: Session = Depends(get_db)):
+    user = _require_user_api(request, db)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Article not found")
+
+    version_number = len(article.versions) + 1
+    db.add(
+        ArticleVersion(
+            article_id=article.id,
+            version=version_number,
+            title=article.title,
+            summary=article.summary,
+            content_text=article.content_text,
+            metadata_=article.metadata_,
+        )
+    )
 
     if payload.title is not None:
         article.title = payload.title
@@ -169,9 +464,10 @@ def update_article(article_id: str, payload: ArticleUpdate, db: Session = Depend
 
 
 @app.delete("/api/articles/{article_id}")
-def delete_article(article_id: str, db: Session = Depends(get_db)):
+def delete_article(article_id: str, request: Request, db: Session = Depends(get_db)):
+    user = _require_user_api(request, db)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Article not found")
     db.delete(article)
     db.commit()
@@ -179,9 +475,11 @@ def delete_article(article_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/search")
-def search_articles(query: str, limit: int = 10, db: Session = Depends(get_db)):
+def search_articles(request: Request, query: str, limit: int = 10, db: Session = Depends(get_db)):
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
+
+    user = _require_user_api(request, db)
 
     try:
         query_embedding = embed_query(query)
@@ -198,6 +496,7 @@ def search_articles(query: str, limit: int = 10, db: Session = Depends(get_db)):
     results = (
         db.query(Chunk, Article, distance, ts_rank)
         .join(Article, Article.id == Chunk.article_id)
+        .filter(Article.owner_id == user.id)
         .order_by(distance)
         .limit(limit * 3)
         .all()
@@ -231,6 +530,10 @@ def search_articles(query: str, limit: int = 10, db: Session = Depends(get_db)):
 
 @app.get("/articles", response_class=HTMLResponse)
 def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional[str] = None, category: Optional[str] = None):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
     error = None
     results = []
     articles = []
@@ -250,7 +553,11 @@ def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional
                 func.to_tsvector("english", Article.title + " " + Article.summary + " " + Article.content_text),
                 ts_query,
             ).label("ts_rank")
-            match_query = db.query(Chunk, Article, distance, ts_rank).join(Article, Article.id == Chunk.article_id)
+            match_query = (
+                db.query(Chunk, Article, distance, ts_rank)
+                .join(Article, Article.id == Chunk.article_id)
+                .filter(Article.owner_id == current_user.id)
+            )
             if selected_category != "all":
                 match_query = match_query.filter(Article.metadata_["category"].astext == selected_category)
             matches = (
@@ -279,31 +586,45 @@ def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional
                     }
             results = sorted(scored.values(), key=lambda item: item["similarity"], reverse=True)[:20]
     else:
-        list_query = db.query(Article)
+        list_query = db.query(Article).filter(Article.owner_id == current_user.id)
         if selected_category != "all":
             list_query = list_query.filter(Article.metadata_["category"].astext == selected_category)
         articles = list_query.order_by(Article.created_at.desc()).all()
 
     return templates.TemplateResponse(
         "articles.html",
-        {
-            "request": request,
-            "articles": articles,
-            "query": query or "",
-            "category": selected_category,
-            "categories": CATEGORIES,
-            "results": results,
-            "error": error,
-        },
+        _template_context(
+            request,
+            current_user,
+            session,
+            articles=articles,
+            query=query or "",
+            category=selected_category,
+            categories=CATEGORIES,
+            results=results,
+            error=error,
+        ),
     )
 
 
 @app.get("/chat", response_class=HTMLResponse)
-def chat_ui(request: Request):
+def chat_ui(request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
     session_id = _get_session_id(request)
     response = templates.TemplateResponse(
         "chat.html",
-        {"request": request, "question": "", "answer": None, "references": [], "error": None},
+        _template_context(
+            request,
+            current_user,
+            session,
+            question="",
+            answer=None,
+            references=[],
+            error=None,
+        ),
     )
     response.set_cookie("rag_session_id", session_id, max_age=60 * 60 * 6)
     return response
@@ -311,6 +632,9 @@ def chat_ui(request: Request):
 
 @app.post("/chat", response_class=HTMLResponse)
 def chat_submit(request: Request, question: str = Form(...), db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
     error = None
     answer = None
     references = []
@@ -321,43 +645,68 @@ def chat_submit(request: Request, question: str = Form(...), db: Session = Depen
         error = str(exc)
         return templates.TemplateResponse(
             "chat.html",
-            {"request": request, "question": question, "answer": None, "references": [], "error": error},
+            _template_context(
+                request,
+                current_user,
+                session,
+                question=question,
+                answer=None,
+                references=[],
+                error=error,
+            ),
         )
 
     distance = Chunk.embedding.cosine_distance(query_embedding).label("distance")
     matches = (
         db.query(Chunk, Article, distance)
         .join(Article, Article.id == Chunk.article_id)
+        .filter(Article.owner_id == current_user.id)
         .order_by(distance)
-        .limit(8)
+        .limit(30)
         .all()
     )
 
-    context_chunks = [(chunk, article) for chunk, article, _dist in matches]
-    context = _build_context(context_chunks)
+    ordered_article_ids: list[uuid.UUID] = []
+    seen_articles: set[uuid.UUID] = set()
+    for _chunk, article, _dist in matches:
+        if article.id in seen_articles:
+            continue
+        seen_articles.add(article.id)
+        ordered_article_ids.append(article.id)
+        if len(ordered_article_ids) >= CHAT_ARTICLE_LIMIT:
+            break
+
+    articles = []
+    if ordered_article_ids:
+        fetched = db.query(Article).filter(Article.id.in_(ordered_article_ids)).all()
+        articles = _order_articles(ordered_article_ids, fetched)
+
+    context = _build_context(articles)
     answer = answer_with_context(question, context)
 
-    seen = set()
-    for chunk, article in context_chunks:
-        if article.id in seen:
-            continue
-        seen.add(article.id)
+    for article in articles:
         references.append({"id": str(article.id), "title": article.title})
 
     return templates.TemplateResponse(
         "chat.html",
-        {
-            "request": request,
-            "question": question,
-            "answer": answer,
-            "references": references,
-            "error": error,
-        },
+        _template_context(
+            request,
+            current_user,
+            session,
+            question=question,
+            answer=answer,
+            references=references,
+            error=error,
+        ),
     )
 
 
 @app.post("/chat/stream")
 async def chat_stream(request: Request, db: Session = Depends(get_db)):
+    current_user = _get_current_user(request, db)
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Login required")
+
     payload = await request.json()
     question = (payload.get("question") or "").strip()
     if not question:
@@ -381,15 +730,16 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     matches = (
         db.query(Chunk, Article, distance, ts_rank)
         .join(Article, Article.id == Chunk.article_id)
+        .filter(Article.owner_id == current_user.id)
         .order_by(distance)
         .limit(18)
         .all()
     )
 
-    references = []
-    context_chunks: list[tuple[Chunk, Article]] = []
-    per_article_counts: dict[str, int] = {}
-    for chunk, article, dist, lex_rank in matches:
+    references: list[dict[str, str]] = []
+    ordered_article_ids: list[uuid.UUID] = []
+    seen_articles: set[uuid.UUID] = set()
+    for _chunk, article, dist, lex_rank in matches:
         semantic = 0.0
         if dist is not None:
             semantic = max(0.0, 1.0 - float(dist))
@@ -398,21 +748,23 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
         if semantic < CHAT_MIN_SEMANTIC and lexical < CHAT_MIN_LEXICAL:
             continue
 
-        article_key = str(article.id)
-        if article_key not in per_article_counts:
-            if len(references) >= 3:
-                continue
-            references.append({"id": article_key, "title": article.title})
-            per_article_counts[article_key] = 0
-
-        if per_article_counts[article_key] >= 2:
+        if article.id in seen_articles:
             continue
-        per_article_counts[article_key] += 1
-        context_chunks.append((chunk, article))
+        seen_articles.add(article.id)
+        ordered_article_ids.append(article.id)
+        references.append({"id": str(article.id), "title": article.title})
+        if len(ordered_article_ids) >= CHAT_ARTICLE_LIMIT:
+            break
 
-    context = _build_context(context_chunks) if context_chunks else ""
+    articles = []
+    if ordered_article_ids:
+        fetched = db.query(Article).filter(Article.id.in_(ordered_article_ids)).all()
+        articles = _order_articles(ordered_article_ids, fetched)
+
+    context = _build_context(articles) if articles else ""
 
     async def event_stream():
+        yield f"event: context\\ndata: {json.dumps(context)}\\n\\n"
         yield f"event: refs\\ndata: {json.dumps(references)}\\n\\n"
         answer_parts: list[str] = []
         for token in stream_answer_with_context(question, context, history_text):
@@ -432,35 +784,81 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/articles/{article_id}", response_class=HTMLResponse)
 def article_detail(article_id: str, request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Article not found")
+    sources = (
+        db.query(Source)
+        .filter(Source.article_id == article.id, Source.source_type == "attachment")
+        .all()
+    )
+    source_links = []
+    for source in sources:
+        name = source.source_name
+        if not name and source.source_uri:
+            name = Path(source.source_uri).name
+        if not name:
+            name = "Attachment"
+        source_links.append({"id": source.id, "name": name})
+    folder_path = article.metadata_.get("folder_path") or "Root"
+    folder_id = article.folder_id
     return templates.TemplateResponse(
-        "article_detail.html", {"request": request, "article": article}
+        "article_detail.html",
+        _template_context(
+            request,
+            current_user,
+            session,
+            article=article,
+            sources=source_links,
+            folder_path=folder_path,
+            folder_id=str(folder_id) if folder_id else None,
+        ),
     )
 
 
 @app.get("/articles/{article_id}/edit", response_class=HTMLResponse)
 def article_edit(article_id: str, request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Article not found")
     return templates.TemplateResponse(
-        "article_edit.html", {"request": request, "article": article}
+        "article_edit.html", _template_context(request, current_user, session, article=article)
     )
 
 
 @app.post("/articles/{article_id}/edit")
 def article_edit_submit(
     article_id: str,
+    request: Request,
     title: str = Form(...),
     summary: str = Form(...),
     metadata_json: str = Form("{}"),
     db: Session = Depends(get_db),
 ):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Article not found")
+
+    version_number = len(article.versions) + 1
+    db.add(
+        ArticleVersion(
+            article_id=article.id,
+            version=version_number,
+            title=article.title,
+            summary=article.summary,
+            content_text=article.content_text,
+            metadata_=article.metadata_,
+        )
+    )
 
     try:
         metadata = json.loads(metadata_json) if metadata_json else {}
@@ -477,10 +875,260 @@ def article_edit_submit(
 
 
 @app.post("/articles/{article_id}/delete")
-def article_delete(article_id: str, db: Session = Depends(get_db)):
+def article_delete(article_id: str, request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article:
+    if not article or article.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Article not found")
     db.delete(article)
     db.commit()
     return RedirectResponse(url="/articles", status_code=303)
+
+
+@app.get("/articles/{article_id}/sources/{source_id}")
+def download_source(article_id: str, source_id: str, request: Request, db: Session = Depends(get_db)):
+    _session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    article = db.get(Article, article_id)
+    if not article or article.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    source = db.get(Source, source_id)
+    if not source or source.article_id != article.id or source.source_type != "attachment":
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    if not source.source_uri:
+        raise HTTPException(status_code=404, detail="Source file missing")
+
+    storage_root = Path(settings.storage_dir).resolve()
+    attachments_root = (storage_root / "attachments").resolve()
+    source_path = Path(source.source_uri).resolve()
+
+    if attachments_root not in source_path.parents and source_path != attachments_root:
+        raise HTTPException(status_code=404, detail="Source file invalid")
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="Source file missing")
+
+    filename = source.source_name or source_path.name
+    if "." not in filename:
+        content_type = (source.metadata_ or {}).get("content_type", "")
+        if "pdf" in content_type or source_path.suffix.lower() == "":
+            filename = f"{filename}.pdf"
+    return FileResponse(source_path, filename=filename)
+
+
+@app.get("/files", response_class=HTMLResponse)
+def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optional[str] = None):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    folders = db.query(Folder).filter(Folder.owner_id == current_user.id).all()
+    folder_tree = _build_folder_tree(folders)
+    folder_path_by_id = _folder_paths_map(folders)
+
+    active_folder_id: Optional[uuid.UUID] = None
+    if folder_id:
+        try:
+            candidate = uuid.UUID(folder_id)
+            folder = db.get(Folder, candidate)
+            if folder and folder.owner_id == current_user.id:
+                active_folder_id = candidate
+        except ValueError:
+            active_folder_id = None
+
+    articles_query = db.query(Article).filter(Article.owner_id == current_user.id)
+    if active_folder_id:
+        articles_query = articles_query.filter(Article.folder_id == active_folder_id)
+    else:
+        articles_query = articles_query.filter(Article.folder_id.is_(None))
+    articles = articles_query.order_by(Article.updated_at.desc()).all()
+    version_counts: dict[uuid.UUID, int] = {}
+    article_folder_paths: dict[uuid.UUID, str] = {}
+    if articles:
+        counts = (
+            db.query(ArticleVersion.article_id, func.count(ArticleVersion.id))
+            .filter(ArticleVersion.article_id.in_([article.id for article in articles]))
+            .group_by(ArticleVersion.article_id)
+            .all()
+        )
+        version_counts = {article_id: count for article_id, count in counts}
+        for article in articles:
+            if article.folder_id and article.folder_id in folder_path_by_id:
+                article_folder_paths[article.id] = folder_path_by_id[article.folder_id]
+            else:
+                article_folder_paths[article.id] = "Root"
+
+    return templates.TemplateResponse(
+        "files.html",
+        _template_context(
+            request,
+            current_user,
+            session,
+            folders=folder_tree,
+            active_folder_id=str(active_folder_id) if active_folder_id else None,
+            articles=articles,
+            version_counts=version_counts,
+            folder_paths=article_folder_paths,
+        ),
+    )
+
+
+@app.post("/files/folders")
+def create_folder(
+    request: Request,
+    name: str = Form(...),
+    parent_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    _session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    parent_uuid: Optional[uuid.UUID] = None
+    if parent_id:
+        try:
+            parent_uuid = uuid.UUID(parent_id)
+        except ValueError:
+            parent_uuid = None
+    if parent_uuid:
+        parent = db.get(Folder, parent_uuid)
+        if not parent or parent.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Parent folder not found")
+
+    folder_name = name.strip()
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    db.add(Folder(owner_id=current_user.id, parent_id=parent_uuid, name=folder_name))
+    db.commit()
+    _sync_article_folder_metadata(db, current_user.id)
+    db.commit()
+    return RedirectResponse(url="/files", status_code=303)
+
+
+@app.post("/files/folders/{folder_id}/rename")
+def rename_folder(folder_id: str, request: Request, name: str = Form(...), db: Session = Depends(get_db)):
+    _session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+    folder = db.get(Folder, folder_id)
+    if not folder or folder.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    folder.name = name.strip()
+    db.add(folder)
+    db.commit()
+    _sync_article_folder_metadata(db, current_user.id)
+    db.commit()
+    return RedirectResponse(url="/files", status_code=303)
+
+
+@app.post("/files/folders/{folder_id}/delete")
+def delete_folder(folder_id: str, request: Request, db: Session = Depends(get_db)):
+    _session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+    folder = db.get(Folder, folder_id)
+    if not folder or folder.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    db.delete(folder)
+    db.commit()
+    _sync_article_folder_metadata(db, current_user.id)
+    db.commit()
+    return RedirectResponse(url="/files", status_code=303)
+
+
+@app.post("/files/folders/{folder_id}/move")
+async def move_folder(folder_id: str, request: Request, db: Session = Depends(get_db)):
+    _session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    payload = {}
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+    else:
+        try:
+            form = await request.form()
+            payload = dict(form)
+        except Exception:
+            payload = {}
+
+    target_parent = payload.get("parent_id")
+    folder = db.get(Folder, folder_id)
+    if not folder or folder.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    parent_uuid: Optional[uuid.UUID] = None
+    if target_parent:
+        try:
+            parent_uuid = uuid.UUID(target_parent)
+        except ValueError:
+            parent_uuid = None
+
+    if parent_uuid:
+        parent = db.get(Folder, parent_uuid)
+        if not parent or parent.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Parent folder not found")
+        if parent.id == folder.id:
+            raise HTTPException(status_code=400, detail="Cannot move into itself")
+
+    folder.parent_id = parent_uuid
+    db.add(folder)
+    db.commit()
+    _sync_article_folder_metadata(db, current_user.id)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/files/articles/{article_id}/move")
+async def move_article(article_id: str, request: Request, db: Session = Depends(get_db)):
+    _session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Login required")
+
+    folder_id = None
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+            folder_id = payload.get("folder_id")
+        except Exception:
+            folder_id = None
+    else:
+        try:
+            form = await request.form()
+            folder_id = form.get("folder_id")
+        except Exception:
+            folder_id = None
+    article = db.get(Article, article_id)
+    if not article or article.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    folder_uuid: Optional[uuid.UUID] = None
+    if folder_id:
+        try:
+            folder_uuid = uuid.UUID(folder_id)
+        except ValueError:
+            folder_uuid = None
+
+    if folder_uuid:
+        folder = db.get(Folder, folder_uuid)
+        if not folder or folder.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+    article.folder_id = folder_uuid
+    if article.metadata_ is None:
+        article.metadata_ = {}
+    article.metadata_["folder_id"] = str(folder_uuid) if folder_uuid else None
+    article.metadata_["folder_path"] = _resolve_folder_path(db, folder_uuid) or "Root"
+    db.add(article)
+    db.commit()
+    return {"status": "ok"}

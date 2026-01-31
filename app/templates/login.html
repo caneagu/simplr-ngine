@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="mx-auto max-w-xl space-y-6">
+    <div>
+      <h1 class="text-3xl font-semibold tracking-tight">Sign in</h1>
+      <p class="mt-2 text-sm text-slate-600">Use the email address that sent the article.</p>
+    </div>
+
+    {% if message %}
+      <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        {{ message }}
+      </div>
+    {% endif %}
+    {% if error %}
+      <div class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+        {{ error }}
+      </div>
+    {% endif %}
+
+    <form class="space-y-4" method="post" action="/login">
+      <label class="block text-sm font-medium text-slate-700" for="email">Email</label>
+      <input
+        class="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-300"
+        type="email"
+        id="email"
+        name="email"
+        required
+        placeholder="you@company.com"
+        value="{{ resend_email or '' }}"
+      />
+      <button class="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700" type="submit">
+        Send magic link
+      </button>
+    </form>
+
+    {% if resend_email %}
+      <form method="post" action="/login">
+        <input type="hidden" name="email" value="{{ resend_email }}" />
+        <button class="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-blue-200 hover:text-blue-600" type="submit">
+          Resend link
+        </button>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}
