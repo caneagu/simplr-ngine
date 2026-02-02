@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"  # openai | openrouter
     llm_model: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
+    vision_model: str = "gpt-4o-mini"
 
     openai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None

@@ -14,7 +14,23 @@
     </div>
   </div>
 
-  <form class="mt-6 grid gap-4 md:grid-cols-[1.6fr_0.9fr_auto]" method="get" action="/articles">
+  <div class="mt-6 grid gap-4 md:grid-cols-3">
+    <div class="rounded-xl border border-gray-100 bg-white px-4 py-3">
+      <p class="text-xs uppercase tracking-[0.2em] text-slate-400">Articles</p>
+      <p class="mt-2 text-2xl font-semibold text-slate-900">{{ article_count }}</p>
+    </div>
+    <div class="rounded-xl border border-gray-100 bg-white px-4 py-3">
+      <p class="text-xs uppercase tracking-[0.2em] text-slate-400">User data size</p>
+      <p class="mt-2 text-2xl font-semibold text-slate-900">{{ user_data_size }}</p>
+    </div>
+    <div class="rounded-xl border border-gray-100 bg-white px-4 py-3">
+      <p class="text-xs uppercase tracking-[0.2em] text-slate-400">Models</p>
+      <p class="mt-2 text-sm text-slate-700">LLM: {{ llm_model }}</p>
+      <p class="text-sm text-slate-700">Embed: {{ embedding_model }}</p>
+    </div>
+  </div>
+
+  <form class="mt-6 grid gap-4 md:grid-cols-[1.6fr_0.9fr_auto]" method="get" action="/insights">
     <input
       class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
       type="text"
@@ -45,7 +61,13 @@
       {% for item in results %}
         <a class="group rounded-2xl border border-gray-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-100 hover:shadow-md" href="/articles/{{ item.article.id }}">
           <div class="flex items-center justify-between text-xs text-slate-400">
-            <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ item.article.metadata_.get('category', 'uncategorized') }}</span>
+            {% set categories = item.article.metadata_.get('categories') or [item.article.metadata_.get('category', 'uncategorized')] %}
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ categories[0].replace('_', ' ').title() }}</span>
+              {% if categories|length > 1 %}
+                <span class="rounded-full border border-gray-200 px-3 py-1 text-slate-500">+{{ categories|length - 1 }}</span>
+              {% endif %}
+            </div>
             {% if item.similarity is not none %}
               <span class="font-semibold text-blue-600">Sim {{ '%.3f' | format(item.similarity) }}</span>
             {% endif %}
@@ -73,8 +95,14 @@
       {% for article in articles %}
         <a class="group rounded-2xl border border-gray-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-100 hover:shadow-md" href="/articles/{{ article.id }}">
           <div class="flex items-center justify-between text-xs text-slate-400">
-            <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ article.metadata_.get('category', 'uncategorized') }}</span>
-            <span>{{ article.created_at }}</span>
+            {% set categories = article.metadata_.get('categories') or [article.metadata_.get('category', 'uncategorized')] %}
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ categories[0].replace('_', ' ').title() }}</span>
+              {% if categories|length > 1 %}
+                <span class="rounded-full border border-gray-200 px-3 py-1 text-slate-500">+{{ categories|length - 1 }}</span>
+              {% endif %}
+            </div>
+            <span>{{ article.created_at | format_dt }}</span>
           </div>
           <h2 class="mt-4 text-lg font-semibold text-slate-900 group-hover:text-slate-700">{{ article.title }}</h2>
           <div class="summary-clamp mt-2 text-sm text-slate-500">{{ article.summary | markdown }}</div>

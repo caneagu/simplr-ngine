@@ -92,7 +92,13 @@ def send_magic_link(recipient: str, magic_link: str) -> None:
     _send_message(message)
 
 
-def send_article_reply(recipient: str, article_title: str, summary_markdown: str, article_url: str) -> None:
+def send_article_reply(
+    recipient: str,
+    article_title: str,
+    summary_markdown: str,
+    article_url: str,
+    summary_usage: dict[str, int] | None = None,
+) -> None:
     if not settings.smtp_host or not settings.smtp_sender:
         raise RuntimeError("SMTP settings are not configured")
 
@@ -100,22 +106,34 @@ def send_article_reply(recipient: str, article_title: str, summary_markdown: str
     message["Subject"] = f"{settings.email_brand_name} saved your article"
     message["From"] = _email_from_header()
     message["To"] = recipient
-    text_body = "\n".join(
-        [
-            f"Your email was saved as: {article_title}",
-            "",
-            "Summary:",
-            summary_markdown or "(summary not available)",
-            "",
-            f"Open the article: {article_url}",
-        ]
-    )
+    usage_line = ""
+    if summary_usage:
+        total = summary_usage.get("total_tokens", 0)
+        prompt = summary_usage.get("prompt_tokens", 0)
+        completion = summary_usage.get("completion_tokens", 0)
+        usage_line = f"Tokens used: {total} (prompt {prompt} + completion {completion})"
+
+    text_lines = [
+        f"Your email was saved as: {article_title}",
+        "",
+        "Summary:",
+        summary_markdown or "(summary not available)",
+    ]
+    if usage_line:
+        text_lines.extend(["", usage_line])
+    text_lines.extend(["", f"Open the article: {article_url}"])
+    text_body = "\n".join(text_lines)
     message.set_content(text_body)
 
     summary_html = markdown.markdown(summary_markdown or "", extensions=["extra", "sane_lists"])
+    usage_html = ""
+    if usage_line:
+        usage_html = f'<p style="font-size:12px;color:#64748b;margin-top:12px;">{usage_line}</p>'
+
     body_html = (
         f"<p>Your email was saved as <strong>{article_title}</strong>.</p>"
         f"{summary_html}"
+        f"{usage_html}"
     )
     html_body = _build_html_email(
         "Article saved",

@@ -106,8 +106,19 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
 
     attachments: list[InboundAttachment] = []
     for attachment in attachments_data:
-        filename = attachment.get("filename") or attachment.get("name") or "attachment"
-        content_type = attachment.get("content_type") or attachment.get("content-type") or "application/octet-stream"
+        filename = (
+            attachment.get("filename")
+            or attachment.get("file_name")
+            or attachment.get("original_filename")
+            or attachment.get("name")
+            or "attachment"
+        )
+        content_type = (
+            attachment.get("content_type")
+            or attachment.get("content-type")
+            or attachment.get("mime_type")
+            or "application/octet-stream"
+        )
         content_b64 = (
             attachment.get("content")
             or attachment.get("data")

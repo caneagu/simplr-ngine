@@ -21,22 +21,35 @@
         <div class="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-600">
           <span class="text-xs uppercase tracking-[0.2em] text-slate-400">Originals</span>
           {% for source in sources %}
-            <a class="rounded-full border border-slate-200 px-3 py-1 text-xs transition hover:border-blue-200 hover:text-blue-600" href="/articles/{{ article.id }}/sources/{{ source.id }}">
+            <button class="rounded-full border border-slate-200 px-3 py-1 text-xs transition hover:border-blue-200 hover:text-blue-600" type="button" data-preview-src="/articles/{{ article.id }}/sources/{{ source.id }}?inline=1">
               {{ source.name }}
-            </a>
+            </button>
+            <a class="text-xs text-slate-400 hover:text-slate-600" target="_blank" href="/articles/{{ article.id }}/sources/{{ source.id }}?inline=1">Open</a>
+            <a class="text-xs text-slate-400 hover:text-slate-600" href="/articles/{{ article.id }}/sources/{{ source.id }}">Download</a>
           {% endfor %}
         </div>
       {% endif %}
       <div class="mt-6 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-        <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ article.metadata_.get('category', 'uncategorized') }}</span>
-        <a class="text-slate-500 hover:text-slate-700" href="/files{% if folder_id %}?folder_id={{ folder_id }}{% endif %}">
+        {% set categories = article.metadata_.get('categories') or [article.metadata_.get('category', 'uncategorized')] %}
+        {% for category in categories %}
+          <span class="rounded-full bg-blue-50 px-3 py-1 text-blue-600">{{ category.replace('_', ' ').title() }}</span>
+        {% endfor %}
+        <a class="text-slate-500 hover:text-slate-700" href="/articles{% if folder_id %}?folder_id={{ folder_id }}{% endif %}">
           Folder: {{ folder_path }}
         </a>
-        <span>Created {{ article.created_at }}</span>
+        <span>Created {{ article.created_at | format_dt }}</span>
       </div>
     </div>
   </div>
 </section>
+
+<dialog id="source-modal" class="w-[90vw] max-w-4xl rounded-2xl border border-gray-200 bg-white p-0 shadow-xl">
+  <div class="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+    <h3 class="text-sm font-semibold text-slate-700">Attachment preview</h3>
+    <button class="text-xs text-slate-500 hover:text-slate-700" type="button" id="source-modal-close">Close</button>
+  </div>
+  <iframe id="source-modal-frame" class="h-[70vh] w-full" src=""></iframe>
+</dialog>
 
 <section class="mt-8">
   <div class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
@@ -50,21 +63,86 @@
     <div class="mt-6">
       <div class="tab-panel" data-tab-panel="classification">
         <h3 class="text-sm font-semibold text-slate-600">Classification</h3>
-        <div class="mt-4 inline-flex rounded-full bg-blue-50 px-4 py-2 text-sm text-blue-600">{{ article.metadata_.get('category', 'uncategorized') }}</div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          {% set categories = article.metadata_.get('categories') or [article.metadata_.get('category', 'uncategorized')] %}
+          {% for category in categories %}
+            <span class="rounded-full bg-blue-50 px-4 py-2 text-sm text-blue-600">{{ category.replace('_', ' ').title() }}</span>
+          {% endfor %}
+        </div>
       </div>
       <div class="tab-panel hidden" data-tab-panel="insights">
         <h3 class="text-sm font-semibold text-slate-600">Insights</h3>
-        <pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-gray-50 p-4 text-xs text-slate-700">
-{{ {
-  "doc_type": article.metadata_.get("doc_type"),
-  "document_date": article.metadata_.get("document_date"),
-  "language": article.metadata_.get("language"),
-  "tags": article.metadata_.get("tags", []),
-  "entities": article.metadata_.get("entities", {}),
-  "date_mentions": article.metadata_.get("date_mentions", []),
-  "confidence": article.metadata_.get("confidence")
-} | tojson(indent=2) }}
-        </pre>
+        {% set insights = article.metadata_.get("insights", {}) %}
+        {% if insights %}
+          <div class="mt-4 grid gap-4 md:grid-cols-2">
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Key points</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {% for item in insights.get("key_points", []) %}
+                  <li>{{ item }}</li>
+                {% else %}
+                  <li class="text-slate-400">No key points extracted.</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Action items</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {% for item in insights.get("action_items", []) %}
+                  <li>{{ item }}</li>
+                {% else %}
+                  <li class="text-slate-400">No action items extracted.</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Decisions</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {% for item in insights.get("decisions", []) %}
+                  <li>{{ item }}</li>
+                {% else %}
+                  <li class="text-slate-400">No decisions extracted.</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Risks</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {% for item in insights.get("risks", []) %}
+                  <li>{{ item }}</li>
+                {% else %}
+                  <li class="text-slate-400">No risks extracted.</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Metrics</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {% for item in insights.get("metrics", []) %}
+                  <li>{{ item }}</li>
+                {% else %}
+                  <li class="text-slate-400">No metrics extracted.</li>
+                {% endfor %}
+              </ul>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <p class="text-xs uppercase tracking-wide text-slate-500">Stakeholders & deadlines</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                {% for item in insights.get("stakeholders", []) %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+                {% for item in insights.get("deadlines", []) %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+                {% if not insights.get("stakeholders") and not insights.get("deadlines") %}
+                  <li class="text-slate-400">No stakeholders or deadlines extracted.</li>
+                {% endif %}
+              </ul>
+            </div>
+          </div>
+        {% else %}
+          <p class="mt-4 text-sm text-slate-500">Insights will appear once this article is re-processed.</p>
+        {% endif %}
       </div>
       <div class="tab-panel hidden" data-tab-panel="metadata">
         <h3 class="text-sm font-semibold text-slate-600">Metadata</h3>
@@ -83,6 +161,10 @@
 <script>
   const tabButtons = document.querySelectorAll('.tab-button');
   const tabPanels = document.querySelectorAll('.tab-panel');
+  const modal = document.getElementById('source-modal');
+  const modalFrame = document.getElementById('source-modal-frame');
+  const modalClose = document.getElementById('source-modal-close');
+  const previewButtons = document.querySelectorAll('[data-preview-src]');
 
   function setActiveTab(tabName) {
     tabButtons.forEach(button => {
@@ -100,6 +182,18 @@
 
   tabButtons.forEach(button => {
     button.addEventListener('click', () => setActiveTab(button.dataset.tab));
+  });
+
+  previewButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      modalFrame.src = button.dataset.previewSrc;
+      modal.showModal();
+    });
+  });
+
+  modalClose.addEventListener('click', () => {
+    modal.close();
+    modalFrame.src = '';
   });
 </script>
 {% endblock %}

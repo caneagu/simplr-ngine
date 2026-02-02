@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import math
 import re
 import uuid
+import urllib.request
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,10 +18,11 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
-from sqlalchemy import func
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.constants import CATEGORIES
 from app.db import get_db
 from app.models import Article, ArticleVersion, Chunk, Folder, MagicLinkToken, SessionToken, Source, User
 from app.schemas import ArticleRead, ArticleUpdate
@@ -32,14 +37,19 @@ from app.services.auth import (
 from app.services.embeddings import embed_query
 from app.services.emailer import send_magic_link
 from app.services.ingest import ingest_email, ingest_email_job
-from app.services.llm import answer_with_context, stream_answer_with_context
+from app.services.llm import (
+    answer_freely,
+    answer_with_context,
+    estimate_free_usage,
+    estimate_rag_usage,
+    stream_answer_freely,
+    stream_answer_with_context,
+)
 from app.services.mailersend import parse_mailersend_payload
 
 app = FastAPI(title="RAG Email MVP")
 
 logger = logging.getLogger("rag-email-mvp")
-
-CATEGORIES = ["all", "support_tickets", "policies", "documentation", "projects", "other", "uncategorized"]
 
 CHAT_MEMORY: dict[str, list[dict[str, str]]] = {}
 CHAT_MEMORY_LIMIT = 6
@@ -61,6 +71,25 @@ def render_markdown(text: Optional[str]) -> Markup:
 
 
 templates.env.filters["markdown"] = render_markdown
+
+
+def format_dt(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        candidate = value.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            return value
+    else:
+        return str(value)
+    return dt.strftime("%d:%m:%Y %H:%M:%S")
+
+
+templates.env.filters["format_dt"] = format_dt
 
 
 def _get_current_session(request: Request, db: Session) -> Optional[SessionToken]:
@@ -124,6 +153,81 @@ def _template_context(
     context.update(kwargs)
     return context
 
+
+def _detect_category_from_question(question: str) -> Optional[str]:
+    normalized = question.lower()
+    for category in CATEGORIES:
+        if category == "all":
+            continue
+        label = category.replace("_", " ")
+        if label in normalized or category in normalized:
+            return category
+    return None
+
+
+def _maybe_stats_answer(question: str, current_user: User, db: Session) -> Optional[str]:
+    normalized = question.lower()
+    if not any(term in normalized for term in ["how many", "count", "number of", "total"]):
+        return None
+
+    if "pdf" in normalized:
+        pdf_count = (
+            db.query(func.count(Source.id))
+            .join(Article, Article.id == Source.article_id)
+            .filter(
+                Article.owner_id == current_user.id,
+                Source.source_type == "attachment",
+                func.lower(Source.metadata_["content_type"].astext).like("%pdf%"),
+            )
+            .scalar()
+            or 0
+        )
+        return f"You have {pdf_count} PDF attachment(s) in the knowledge base."
+
+    if "report" in normalized:
+        report_count = (
+            db.query(func.count(Article.id))
+            .filter(Article.owner_id == current_user.id, Article.metadata_["doc_type"].astext == "report")
+            .scalar()
+            or 0
+        )
+        return f"You have {report_count} report article(s) in the knowledge base."
+
+    category = _detect_category_from_question(normalized)
+    if category:
+        category_count = (
+            db.query(func.count(Article.id))
+            .filter(
+                Article.owner_id == current_user.id,
+                or_(
+                    Article.metadata_["category"].astext == category,
+                    Article.metadata_["categories"].contains([category]),
+                ),
+            )
+            .scalar()
+            or 0
+        )
+        label = category.replace("_", " ")
+        return f"You have {category_count} article(s) in the “{label}” category."
+
+    if "article" in normalized or "document" in normalized:
+        article_count = (
+            db.query(func.count(Article.id)).filter(Article.owner_id == current_user.id).scalar() or 0
+        )
+        return f"You have {article_count} article(s) in the knowledge base."
+
+    if "attachment" in normalized or "file" in normalized:
+        attachment_count = (
+            db.query(func.count(Source.id))
+            .join(Article, Article.id == Source.article_id)
+            .filter(Article.owner_id == current_user.id, Source.source_type == "attachment")
+            .scalar()
+            or 0
+        )
+        return f"You have {attachment_count} attachment(s) stored in the knowledge base."
+
+    return None
+
 def _keyword_terms(query: str) -> list[str]:
     terms = [t for t in re.split(r"\\W+", query.lower()) if len(t) >= 3]
     seen = set()
@@ -168,6 +272,34 @@ def _build_context(articles: list[Article]) -> str:
             )
         )
     return "\n\n".join(parts)
+
+
+def _build_cited_context(sources: list[dict[str, Any]]) -> str:
+    parts = ["Sources:"]
+    for source in sources:
+        parts.append(
+            "\n".join(
+                [
+                    f"[{source['index']}] Title: {source['title']}",
+                    f"Folder: {source.get('folder_path') or 'Root'}",
+                    "Summary:",
+                    source.get("summary") or "",
+                    "Excerpt:",
+                    source["excerpt"],
+                ]
+            )
+        )
+    return "\n\n".join(parts)
+
+
+def _human_bytes(value: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} PB"
 
 
 def _build_folder_tree(folders: list[Folder]) -> list[dict[str, Any]]:
@@ -260,14 +392,14 @@ def _render_history(messages: list[dict[str, str]]) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def root() -> RedirectResponse:
-    return RedirectResponse(url="/articles")
+    return RedirectResponse(url="/insights")
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_ui(request: Request, db: Session = Depends(get_db)):
     session, current_user = _get_session_and_user(request, db)
     if current_user:
-        return RedirectResponse(url="/articles", status_code=303)
+        return RedirectResponse(url="/insights", status_code=303)
     return templates.TemplateResponse(
         "login.html",
         _template_context(request, None, session, message=None, error=None, resend_email=None),
@@ -344,7 +476,7 @@ def auth_callback(request: Request, token: str, db: Session = Depends(get_db)):
     )
     db.commit()
 
-    response = RedirectResponse(url="/articles", status_code=303)
+    response = RedirectResponse(url="/insights", status_code=303)
     response.set_cookie(
         SESSION_COOKIE,
         session_token,
@@ -369,6 +501,23 @@ def logout(request: Request, db: Session = Depends(get_db)):
         db.delete(session)
         db.commit()
     return response
+
+
+@app.get("/api/openrouter/models")
+def list_openrouter_models():
+    if not settings.openrouter_api_key:
+        raise HTTPException(status_code=400, detail="OpenRouter is not configured")
+    req = urllib.request.Request(
+        f"{settings.openrouter_base_url}/models",
+        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    models = [item.get("id") for item in payload.get("data", []) if item.get("id")]
+    return {"models": sorted(models)}
 
 
 @app.post("/webhooks/mailersend", status_code=202)
@@ -528,8 +677,8 @@ def search_articles(request: Request, query: str, limit: int = 10, db: Session =
     return payload
 
 
-@app.get("/articles", response_class=HTMLResponse)
-def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional[str] = None, category: Optional[str] = None):
+@app.get("/insights", response_class=HTMLResponse)
+def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional[str] = None, category: Optional[str] = None):
     session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
@@ -559,7 +708,12 @@ def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional
                 .filter(Article.owner_id == current_user.id)
             )
             if selected_category != "all":
-                match_query = match_query.filter(Article.metadata_["category"].astext == selected_category)
+                match_query = match_query.filter(
+                    or_(
+                        Article.metadata_["category"].astext == selected_category,
+                        Article.metadata_["categories"].contains([selected_category]),
+                    )
+                )
             matches = (
                 match_query
                 .order_by(distance)
@@ -588,8 +742,43 @@ def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional
     else:
         list_query = db.query(Article).filter(Article.owner_id == current_user.id)
         if selected_category != "all":
-            list_query = list_query.filter(Article.metadata_["category"].astext == selected_category)
+            list_query = list_query.filter(
+                or_(
+                    Article.metadata_["category"].astext == selected_category,
+                    Article.metadata_["categories"].contains([selected_category]),
+                )
+            )
         articles = list_query.order_by(Article.created_at.desc()).all()
+
+    article_count = db.query(func.count(Article.id)).filter(Article.owner_id == current_user.id).scalar() or 0
+    text_bytes = (
+        db.query(func.coalesce(func.sum(func.length(Article.content_text)), 0))
+        .filter(Article.owner_id == current_user.id)
+        .scalar()
+        or 0
+    )
+    chunk_bytes = (
+        db.query(func.coalesce(func.sum(func.length(Chunk.content)), 0))
+        .join(Article, Article.id == Chunk.article_id)
+        .filter(Article.owner_id == current_user.id)
+        .scalar()
+        or 0
+    )
+    attachment_bytes = 0
+    sources = (
+        db.query(Source.source_uri)
+        .join(Article, Article.id == Source.article_id)
+        .filter(Article.owner_id == current_user.id, Source.source_type == "attachment")
+        .all()
+    )
+    for (uri,) in sources:
+        if not uri:
+            continue
+        try:
+            attachment_bytes += os.path.getsize(uri)
+        except OSError:
+            continue
+    user_data_size = _human_bytes(int(text_bytes + chunk_bytes + attachment_bytes))
 
     return templates.TemplateResponse(
         "articles.html",
@@ -597,6 +786,10 @@ def articles_ui(request: Request, db: Session = Depends(get_db), query: Optional
             request,
             current_user,
             session,
+            article_count=article_count,
+            user_data_size=user_data_size,
+            llm_model=settings.llm_model,
+            embedding_model=settings.embedding_model,
             articles=articles,
             query=query or "",
             category=selected_category,
@@ -631,13 +824,48 @@ def chat_ui(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/chat", response_class=HTMLResponse)
-def chat_submit(request: Request, question: str = Form(...), db: Session = Depends(get_db)):
+def chat_submit(
+    request: Request,
+    question: str = Form(...),
+    ground: bool = Form(True),
+    db: Session = Depends(get_db),
+):
     session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     error = None
     answer = None
     references = []
+
+    stats_answer = _maybe_stats_answer(question, current_user, db)
+    if stats_answer:
+        return templates.TemplateResponse(
+            "chat.html",
+            _template_context(
+                request,
+                current_user,
+                session,
+                question=question,
+                answer=stats_answer,
+                references=[],
+                error=None,
+            ),
+        )
+
+    if not ground:
+        answer = answer_freely(question)
+        return templates.TemplateResponse(
+            "chat.html",
+            _template_context(
+                request,
+                current_user,
+                session,
+                question=question,
+                answer=answer,
+                references=[],
+                error=None,
+            ),
+        )
 
     try:
         query_embedding = embed_query(question)
@@ -666,26 +894,58 @@ def chat_submit(request: Request, question: str = Form(...), db: Session = Depen
         .all()
     )
 
-    ordered_article_ids: list[uuid.UUID] = []
+    sources: list[dict[str, Any]] = []
     seen_articles: set[uuid.UUID] = set()
-    for _chunk, article, _dist in matches:
-        if article.id in seen_articles:
+    for chunk, article, _dist in matches:
+        if article.id not in seen_articles and len(seen_articles) >= CHAT_ARTICLE_LIMIT:
             continue
         seen_articles.add(article.id)
-        ordered_article_ids.append(article.id)
-        if len(ordered_article_ids) >= CHAT_ARTICLE_LIMIT:
+        folder_path = article.metadata_.get("folder_path") or "Root"
+        sources.append(
+            {
+                "article_id": str(article.id),
+                "title": article.title,
+                "summary": article.summary or "",
+                "excerpt": chunk.content[:600],
+                "folder_path": folder_path,
+            }
+        )
+        if len(sources) >= 8:
             break
 
-    articles = []
-    if ordered_article_ids:
-        fetched = db.query(Article).filter(Article.id.in_(ordered_article_ids)).all()
-        articles = _order_articles(ordered_article_ids, fetched)
+    if not sources and matches:
+        for chunk, article, _dist in matches[:CHAT_ARTICLE_LIMIT]:
+            if article.id in seen_articles:
+                continue
+            seen_articles.add(article.id)
+            folder_path = article.metadata_.get("folder_path") or "Root"
+            sources.append(
+                {
+                    "article_id": str(article.id),
+                    "title": article.title,
+                    "summary": article.summary or "",
+                    "excerpt": chunk.content[:600],
+                    "folder_path": folder_path,
+                }
+            )
+        sources = sources[: min(8, len(sources))]
 
-    context = _build_context(articles)
+    for index, source in enumerate(sources, start=1):
+        source["index"] = index
+
+    context = _build_cited_context(sources) if sources else ""
     answer = answer_with_context(question, context)
 
-    for article in articles:
-        references.append({"id": str(article.id), "title": article.title})
+    for source in sources:
+        references.append(
+            {
+                "id": source["article_id"],
+                "title": source["title"],
+                "summary": source.get("summary") or "",
+                "excerpt": source["excerpt"],
+                "index": source["index"],
+            }
+        )
 
     return templates.TemplateResponse(
         "chat.html",
@@ -711,10 +971,78 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     question = (payload.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
+    model = payload.get("model")
+    provider = payload.get("provider")
+    temperature = payload.get("temperature")
+    max_tokens = payload.get("max_tokens")
+    ground = payload.get("ground", True)
+    try:
+        temperature = float(temperature) if temperature is not None else None
+    except (TypeError, ValueError):
+        temperature = None
+    try:
+        max_tokens = int(max_tokens) if max_tokens is not None else None
+    except (TypeError, ValueError):
+        max_tokens = None
+    if provider == "openrouter" and not settings.openrouter_api_key:
+        raise HTTPException(status_code=400, detail="OpenRouter is not configured")
+
+    stats_answer = _maybe_stats_answer(question, current_user, db)
+    if stats_answer:
+        async def event_stream():
+            context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
+            yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+            refs_b64 = base64.b64encode(json.dumps([]).encode("utf-8")).decode("utf-8")
+            yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
+            yield f"event: answer\\ndata: {json.dumps(stats_answer)}\\n\\n"
+            yield f"event: usage\\ndata: {json.dumps({'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})}\\n\\n"
+            yield "event: done\\ndata: {}\\n\\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     session_id = _get_session_id(request)
     history = CHAT_MEMORY.get(session_id, [])
     history_text = _render_history(history)
+
+    if not ground:
+        async def event_stream():
+            context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
+            yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+            refs_b64 = base64.b64encode(json.dumps([]).encode("utf-8")).decode("utf-8")
+            yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
+            answer_parts: list[str] = []
+            try:
+                for token in stream_answer_freely(
+                    question,
+                    history_text,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    provider=provider,
+                ):
+                    answer_parts.append(token)
+                    yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+            except Exception as exc:
+                yield f"event: error\\ndata: {json.dumps(str(exc))}\\n\\n"
+                yield "event: done\\ndata: {}\\n\\n"
+                return
+
+            answer_text = "".join(answer_parts).strip()
+            usage = estimate_free_usage(
+                question,
+                history_text,
+                answer_text,
+                model or settings.llm_model,
+            )
+            yield f"event: usage\\ndata: {json.dumps(usage)}\\n\\n"
+            history.append({"role": "user", "content": question})
+            history.append({"role": "assistant", "content": answer_text})
+            CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
+            yield "event: done\ndata: {}\n\n"
+
+        response = StreamingResponse(event_stream(), media_type="text/event-stream")
+        response.set_cookie("rag_session_id", session_id, max_age=60 * 60 * 6)
+        return response
 
     try:
         query_embedding = embed_query(question)
@@ -737,9 +1065,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     )
 
     references: list[dict[str, str]] = []
-    ordered_article_ids: list[uuid.UUID] = []
+    sources: list[dict[str, Any]] = []
     seen_articles: set[uuid.UUID] = set()
-    for _chunk, article, dist, lex_rank in matches:
+    for chunk, article, dist, lex_rank in matches:
         semantic = 0.0
         if dist is not None:
             semantic = max(0.0, 1.0 - float(dist))
@@ -748,30 +1076,85 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
         if semantic < CHAT_MIN_SEMANTIC and lexical < CHAT_MIN_LEXICAL:
             continue
 
-        if article.id in seen_articles:
+        if article.id not in seen_articles and len(seen_articles) >= CHAT_ARTICLE_LIMIT:
             continue
         seen_articles.add(article.id)
-        ordered_article_ids.append(article.id)
-        references.append({"id": str(article.id), "title": article.title})
-        if len(ordered_article_ids) >= CHAT_ARTICLE_LIMIT:
+        folder_path = article.metadata_.get("folder_path") or "Root"
+        sources.append(
+            {
+                "article_id": str(article.id),
+                "title": article.title,
+                "summary": article.summary or "",
+                "excerpt": chunk.content[:600],
+                "folder_path": folder_path,
+            }
+        )
+        if len(sources) >= 8:
             break
 
-    articles = []
-    if ordered_article_ids:
-        fetched = db.query(Article).filter(Article.id.in_(ordered_article_ids)).all()
-        articles = _order_articles(ordered_article_ids, fetched)
+    if not sources and matches:
+        for chunk, article, _dist, _lex_rank in matches[:CHAT_ARTICLE_LIMIT]:
+            if article.id in seen_articles:
+                continue
+            seen_articles.add(article.id)
+            folder_path = article.metadata_.get("folder_path") or "Root"
+            sources.append(
+                {
+                    "article_id": str(article.id),
+                    "title": article.title,
+                    "summary": article.summary or "",
+                    "excerpt": chunk.content[:600],
+                    "folder_path": folder_path,
+                }
+            )
+        sources = sources[: min(8, len(sources))]
 
-    context = _build_context(articles) if articles else ""
+    for index, source in enumerate(sources, start=1):
+        source["index"] = index
+        references.append(
+            {
+                "id": source["article_id"],
+                "title": source["title"],
+                "summary": source.get("summary") or "",
+                "excerpt": source["excerpt"],
+                "index": source["index"],
+            }
+        )
+
+    context = _build_cited_context(sources) if sources else ""
 
     async def event_stream():
-        yield f"event: context\\ndata: {json.dumps(context)}\\n\\n"
-        yield f"event: refs\\ndata: {json.dumps(references)}\\n\\n"
+        context_b64 = base64.b64encode(context.encode("utf-8")).decode("utf-8")
+        yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+        refs_b64 = base64.b64encode(json.dumps(references).encode("utf-8")).decode("utf-8")
+        yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
         answer_parts: list[str] = []
-        for token in stream_answer_with_context(question, context, history_text):
-            answer_parts.append(token)
-            yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+        try:
+            for token in stream_answer_with_context(
+                question,
+                context,
+                history_text,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                provider=provider,
+            ):
+                answer_parts.append(token)
+                yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+        except Exception as exc:
+            yield f"event: error\\ndata: {json.dumps(str(exc))}\\n\\n"
+            yield "event: done\\ndata: {}\\n\\n"
+            return
 
         answer_text = "".join(answer_parts).strip()
+        usage = estimate_rag_usage(
+            question,
+            context,
+            history_text,
+            answer_text,
+            model or settings.llm_model,
+        )
+        yield f"event: usage\\ndata: {json.dumps(usage)}\\n\\n"
         history.append({"role": "user", "content": question})
         history.append({"role": "assistant", "content": answer_text})
         CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
@@ -797,11 +1180,16 @@ def article_detail(article_id: str, request: Request, db: Session = Depends(get_
     )
     source_links = []
     for source in sources:
-        name = source.source_name
+        name = (source.metadata_ or {}).get("original_filename") or source.source_name
         if not name and source.source_uri:
             name = Path(source.source_uri).name
         if not name:
+            name = (source.metadata_ or {}).get("original_filename")
+        if not name:
             name = "Attachment"
+        content_type = (source.metadata_ or {}).get("content_type", "")
+        if "." not in name and "pdf" in content_type.lower():
+            name = f"{name}.pdf"
         source_links.append({"id": source.id, "name": name})
     folder_path = article.metadata_.get("folder_path") or "Root"
     folder_id = article.folder_id
@@ -884,7 +1272,7 @@ def article_delete(article_id: str, request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Article not found")
     db.delete(article)
     db.commit()
-    return RedirectResponse(url="/articles", status_code=303)
+    return RedirectResponse(url="/insights", status_code=303)
 
 
 @app.get("/articles/{article_id}/sources/{source_id}")
@@ -913,15 +1301,18 @@ def download_source(article_id: str, source_id: str, request: Request, db: Sessi
     if not source_path.exists():
         raise HTTPException(status_code=404, detail="Source file missing")
 
-    filename = source.source_name or source_path.name
+    filename = (source.metadata_ or {}).get("original_filename") or source.source_name or source_path.name
     if "." not in filename:
         content_type = (source.metadata_ or {}).get("content_type", "")
         if "pdf" in content_type or source_path.suffix.lower() == "":
             filename = f"{filename}.pdf"
-    return FileResponse(source_path, filename=filename)
+    inline = request.query_params.get("inline") == "1"
+    disposition = "inline" if inline else "attachment"
+    headers = {"Content-Disposition": f'{disposition}; filename="{filename}"'}
+    return FileResponse(source_path, filename=filename, headers=headers)
 
 
-@app.get("/files", response_class=HTMLResponse)
+@app.get("/articles", response_class=HTMLResponse)
 def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optional[str] = None):
     session, current_user = _get_session_and_user(request, db)
     if not current_user:
@@ -978,7 +1369,7 @@ def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optiona
     )
 
 
-@app.post("/files/folders")
+@app.post("/articles/folders")
 def create_folder(
     request: Request,
     name: str = Form(...),
@@ -1007,10 +1398,10 @@ def create_folder(
     db.commit()
     _sync_article_folder_metadata(db, current_user.id)
     db.commit()
-    return RedirectResponse(url="/files", status_code=303)
+    return RedirectResponse(url="/articles", status_code=303)
 
 
-@app.post("/files/folders/{folder_id}/rename")
+@app.post("/articles/folders/{folder_id}/rename")
 def rename_folder(folder_id: str, request: Request, name: str = Form(...), db: Session = Depends(get_db)):
     _session, current_user = _get_session_and_user(request, db)
     if not current_user:
@@ -1023,10 +1414,10 @@ def rename_folder(folder_id: str, request: Request, name: str = Form(...), db: S
     db.commit()
     _sync_article_folder_metadata(db, current_user.id)
     db.commit()
-    return RedirectResponse(url="/files", status_code=303)
+    return RedirectResponse(url="/articles", status_code=303)
 
 
-@app.post("/files/folders/{folder_id}/delete")
+@app.post("/articles/folders/{folder_id}/delete")
 def delete_folder(folder_id: str, request: Request, db: Session = Depends(get_db)):
     _session, current_user = _get_session_and_user(request, db)
     if not current_user:
@@ -1038,10 +1429,10 @@ def delete_folder(folder_id: str, request: Request, db: Session = Depends(get_db
     db.commit()
     _sync_article_folder_metadata(db, current_user.id)
     db.commit()
-    return RedirectResponse(url="/files", status_code=303)
+    return RedirectResponse(url="/articles", status_code=303)
 
 
-@app.post("/files/folders/{folder_id}/move")
+@app.post("/articles/folders/{folder_id}/move")
 async def move_folder(folder_id: str, request: Request, db: Session = Depends(get_db)):
     _session, current_user = _get_session_and_user(request, db)
     if not current_user:
@@ -1088,7 +1479,7 @@ async def move_folder(folder_id: str, request: Request, db: Session = Depends(ge
     return {"status": "ok"}
 
 
-@app.post("/files/articles/{article_id}/move")
+@app.post("/articles/{article_id}/move")
 async def move_article(article_id: str, request: Request, db: Session = Depends(get_db)):
     _session, current_user = _get_session_and_user(request, db)
     if not current_user:
@@ -1132,3 +1523,8 @@ async def move_article(article_id: str, request: Request, db: Session = Depends(
     db.add(article)
     db.commit()
     return {"status": "ok"}
+
+
+@app.get("/files")
+def files_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/articles", status_code=302)

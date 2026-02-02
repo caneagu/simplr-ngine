@@ -23,6 +23,27 @@
     </div>
 
     <form class="mt-6 space-y-4" id="chat-form">
+      <div class="grid gap-3 md:grid-cols-3">
+        <div>
+          <label class="text-xs uppercase tracking-wide text-slate-400">Model</label>
+          <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model">
+            <option value="">Default (settings)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs uppercase tracking-wide text-slate-400">Creativity</label>
+          <input class="mt-3 w-full" id="chat-temperature" type="range" min="0" max="4" step="1" value="1" />
+          <p class="mt-2 text-xs text-slate-500" id="chat-temperature-label">Focused</p>
+        </div>
+        <div>
+          <label class="text-xs uppercase tracking-wide text-slate-400">Max tokens</label>
+          <input class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-max-tokens" type="number" min="64" max="4000" step="64" value="800" />
+        </div>
+      </div>
+      <label class="flex items-center gap-3 text-xs text-slate-500">
+        <input class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600/20" id="chat-grounding" name="ground" type="checkbox" checked />
+        Ground answers in your knowledge base (RAG)
+      </label>
       <textarea
         class="w-full resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
         id="chat-input"
@@ -32,7 +53,10 @@
       ></textarea>
       <div class="flex items-center justify-between">
         <p class="text-xs text-slate-500">Shift + Enter for a new line</p>
-        <button class="rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-slate-900/10 transition hover:bg-slate-800" type="submit">Ask</button>
+        <div class="flex items-center gap-4">
+          <span class="text-xs text-slate-500" id="chat-token-count">Tokens: 0</span>
+          <button class="rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-lg shadow-slate-900/10 transition hover:bg-slate-800" type="submit">Ask</button>
+        </div>
       </div>
     </form>
 
@@ -54,13 +78,113 @@
   </aside>
 </div>
 
+<style>
+  .chat-markdown h1, .chat-markdown h2, .chat-markdown h3 { margin: 0.6rem 0 0.4rem; font-weight: 600; }
+  .chat-markdown p { margin: 0.4rem 0; }
+  .chat-markdown ul, .chat-markdown ol { margin: 0.4rem 0 0.4rem 1.25rem; }
+  .chat-markdown li { margin: 0.2rem 0; }
+  .chat-markdown code { background: #f1f5f9; padding: 0 0.25rem; border-radius: 4px; }
+  .chat-markdown pre { background: #0f172a; color: #e2e8f0; padding: 0.75rem; border-radius: 10px; overflow: auto; }
+  .chat-markdown pre code { background: transparent; padding: 0; }
+  .chat-markdown table { border-collapse: collapse; margin: 0.6rem 0; width: 100%; }
+  .chat-markdown th, .chat-markdown td { border: 1px solid #e2e8f0; padding: 6px 8px; }
+  .chat-markdown blockquote { border-left: 3px solid #e2e8f0; padding-left: 10px; color: #64748b; margin: 0.4rem 0; }
+  .chat-markdown hr { border: none; border-top: 1px solid #e2e8f0; margin: 0.6rem 0; }
+  .ref-excerpt {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it-emoji@3.0.0/dist/markdown-it-emoji.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it-task-lists@2.1.1/dist/markdown-it-task-lists.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script>
+  const md = window.markdownit({
+    html: false,
+    linkify: true,
+    breaks: true,
+    typographer: true
+  }).use(window.markdownitEmoji).use(window.markdownitTaskLists, { enabled: true });
   const form = document.getElementById('chat-form');
   const input = document.getElementById('chat-input');
   const thread = document.getElementById('chat-thread');
   const refsList = document.getElementById('chat-refs');
   const errorBox = document.getElementById('chat-error');
   const contextBox = document.getElementById('chat-context');
+  const modelSelect = document.getElementById('chat-model');
+  const temperatureInput = document.getElementById('chat-temperature');
+  const temperatureLabel = document.getElementById('chat-temperature-label');
+  const maxTokensInput = document.getElementById('chat-max-tokens');
+  const groundingToggle = document.getElementById('chat-grounding');
+  const tokenCountLabel = document.getElementById('chat-token-count');
+  let refsByIndex = {};
+  let lastAnswerContent = null;
+  const TEMPERATURE_PRESETS = [
+    { label: 'Very focused', value: 0.0 },
+    { label: 'Focused', value: 0.2 },
+    { label: 'Balanced', value: 0.5 },
+    { label: 'Creative', value: 0.8 },
+    { label: 'Very creative', value: 1.0 }
+  ];
+  const MODEL_FAMILIES = [
+    { label: 'GPT-4o', patterns: [/^openai\/gpt-4o(?!-mini)/], limit: 1 },
+    { label: 'GPT-4o mini', patterns: [/^openai\/gpt-4o-mini/], limit: 1 },
+    { label: 'Claude Sonnet', patterns: [/^anthropic\/claude-.*sonnet/], limit: 1 },
+    { label: 'Gemini Pro', patterns: [/^google\/gemini-.*-pro/], limit: 1 },
+    { label: 'Gemini Flash', patterns: [/^google\/gemini-.*-flash/], limit: 1 },
+    { label: 'GLM-4.7', patterns: [/^z-ai\/glm-4\.7/], limit: 1 }
+  ];
+  const FALLBACK_MODEL_LIMIT = 12;
+
+  async function loadModels() {
+    const cached = sessionStorage.getItem('openrouterModels');
+    if (cached) {
+      try {
+        const models = JSON.parse(cached);
+        populateModels(models);
+        return;
+      } catch {}
+    }
+    try {
+      const res = await fetch('/api/openrouter/models');
+      if (!res.ok) return;
+      const data = await res.json();
+      const models = data.models || [];
+      sessionStorage.setItem('openrouterModels', JSON.stringify(models));
+      populateModels(models);
+    } catch {}
+  }
+
+  function populateModels(models) {
+    const curated = [];
+    const seen = new Set();
+    MODEL_FAMILIES.forEach(family => {
+      const matches = models.filter(model =>
+        !seen.has(model) && family.patterns.some(pattern => pattern.test(model))
+      );
+      if (matches.length === 0) return;
+      const selected = matches.slice(-family.limit);
+      selected.forEach(model => {
+        seen.add(model);
+        curated.push({ id: model, label: `${family.label} (${model})` });
+      });
+    });
+    const modelsToShow = curated.length
+      ? curated
+      : models.slice(0, FALLBACK_MODEL_LIMIT).map(model => ({ id: model, label: model }));
+    modelsToShow.forEach(model => {
+      const opt = document.createElement('option');
+      opt.value = model.id;
+      opt.textContent = model.label;
+      modelSelect.appendChild(opt);
+    });
+    if (!modelSelect.value && modelsToShow.length > 0) {
+      modelSelect.value = modelsToShow[0].id;
+    }
+  }
 
   function addBubble(text, role) {
     const bubble = document.createElement('div');
@@ -69,9 +193,10 @@
         ? 'ml-auto bg-slate-900 text-white'
         : 'border border-gray-200 bg-white text-slate-700'
     }`;
-    const p = document.createElement('p');
-    p.textContent = text;
-    bubble.appendChild(p);
+    const content = document.createElement('div');
+    content.className = role === 'user' ? '' : 'chat-markdown';
+    content.textContent = text;
+    bubble.appendChild(content);
     const wrapper = document.createElement('div');
     wrapper.className = 'mt-4 flex';
     if (role === 'user') {
@@ -95,6 +220,7 @@
 
   function updateRefs(refs) {
     refsList.innerHTML = '';
+    refsByIndex = {};
     if (!refs || refs.length === 0) {
       const li = document.createElement('li');
       li.className = 'rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-slate-400';
@@ -103,25 +229,100 @@
       return;
     }
     refs.forEach(ref => {
+      const refIndex = Number(ref.index);
+      if (!Number.isNaN(refIndex) && refIndex > 0) {
+        refsByIndex[refIndex] = ref;
+      }
       const li = document.createElement('li');
+      li.id = `ref-${refIndex}`;
       const link = document.createElement('a');
       link.className = 'block rounded-lg border border-gray-200 bg-white px-4 py-3 transition hover:border-blue-100 hover:text-blue-600';
       link.href = `/articles/${ref.id}`;
-      link.textContent = ref.title;
+      link.textContent = `[${refIndex}] ${ref.title}`;
+      const excerpt = document.createElement('p');
+      excerpt.className = 'ref-excerpt mt-2 text-xs text-slate-500';
+      excerpt.textContent = ref.summary || ref.excerpt || '';
+      excerpt.dataset.summary = ref.summary || ref.excerpt || '';
+      excerpt.dataset.full = ref.excerpt || ref.summary || '';
+      excerpt.addEventListener('mouseenter', () => {
+        excerpt.textContent = excerpt.dataset.full || excerpt.textContent;
+        excerpt.style.webkitLineClamp = 'unset';
+        excerpt.style.overflow = 'visible';
+      });
+      excerpt.addEventListener('mouseleave', () => {
+        excerpt.textContent = excerpt.dataset.summary || excerpt.textContent;
+        excerpt.style.webkitLineClamp = '2';
+        excerpt.style.overflow = 'hidden';
+      });
+      link.appendChild(excerpt);
       li.appendChild(link);
       refsList.appendChild(li);
     });
+    if (lastAnswerContent) {
+      linkifyCitations(lastAnswerContent);
+    }
+  }
+
+  function linkifyCitations(container) {
+    if (!container) return;
+    const html = container.innerHTML;
+    const linked = html.replace(/\[(\d+)\]/g, (match, index) => {
+      const refIndex = Number(index);
+      const ref = refsByIndex[refIndex];
+      if (!ref) return match;
+      return `<sup><a class="text-blue-600 hover:text-blue-700" href="/articles/${ref.id}#ref-${refIndex}">[${refIndex}]</a></sup>`;
+    });
+    container.innerHTML = linked;
+  }
+
+  function updateTemperatureLabel() {
+    const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
+    const preset = TEMPERATURE_PRESETS[index];
+    if (preset) {
+      temperatureLabel.textContent = preset.label;
+    }
+  }
+
+  function getSelectedTemperature() {
+    const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
+    const preset = TEMPERATURE_PRESETS[index];
+    return preset ? preset.value : 0.2;
+  }
+
+  function normalizeTokenInput() {
+    const raw = Number(maxTokensInput.value);
+    if (!Number.isFinite(raw)) return null;
+    const min = Number(maxTokensInput.min) || 0;
+    const max = Number(maxTokensInput.max) || raw;
+    const step = Number(maxTokensInput.step) || 1;
+    const clamped = Math.min(max, Math.max(min, raw));
+    const snapped = min + Math.round((clamped - min) / step) * step;
+    maxTokensInput.value = String(snapped);
+    return snapped;
   }
 
   async function streamAnswer(question) {
     setError('');
+    if (tokenCountLabel) {
+      tokenCountLabel.textContent = 'Tokens: 0';
+    }
     const userBubble = addBubble(question, 'user');
     const answerBubble = addBubble('', 'assistant');
+    const answerContent = answerBubble.querySelector('div');
+    lastAnswerContent = answerContent;
+    const maxTokens = normalizeTokenInput();
 
     const response = await fetch('/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question })
+      body: JSON.stringify({
+        question,
+        model: modelSelect.value || null,
+        provider: 'openrouter',
+        temperature: getSelectedTemperature(),
+        max_tokens: maxTokens,
+        ground: groundingToggle.checked
+      })
     });
 
     if (!response.ok) {
@@ -156,7 +357,13 @@
 
         if (event === 'refs') {
           try {
-            updateRefs(JSON.parse(data));
+            const parsed = JSON.parse(data);
+            if (parsed && parsed.b64) {
+              const decoded = atob(parsed.b64);
+              updateRefs(JSON.parse(decoded));
+            } else {
+              updateRefs(parsed);
+            }
           } catch {}
         } else if (event === 'context') {
           const payload = (data || '').trim();
@@ -165,16 +372,43 @@
           } else {
             try {
               const parsed = JSON.parse(payload);
-              contextBox.textContent = parsed || 'No context.';
+              if (parsed && parsed.b64) {
+                const decoded = atob(parsed.b64);
+                contextBox.textContent = decoded || 'No context.';
+              } else {
+                contextBox.textContent = JSON.stringify(parsed, null, 2);
+              }
             } catch {
               contextBox.textContent = payload;
             }
+          }
+        } else if (event === 'error') {
+          try {
+            setError(JSON.parse(data));
+          } catch {
+            setError(data);
           }
         } else if (event === 'answer') {
           try {
             const token = JSON.parse(data);
             answerText += token;
-            answerBubble.querySelector('p').textContent = answerText;
+            if (window.DOMPurify) {
+              const normalized = answerText
+                .replace(/([^\n])\s*(#{1,6}\s)/g, '$1\n\n$2')
+                .replace(/([^\n])\s*(\d+\.\s)/g, '$1\n$2')
+                .replace(/([^\n])\s*([*-]\s)/g, '$1\n$2');
+              answerContent.innerHTML = DOMPurify.sanitize(md.render(normalized));
+              linkifyCitations(answerContent);
+            } else {
+              answerContent.textContent = answerText;
+            }
+          } catch {}
+        } else if (event === 'usage') {
+          try {
+            const usage = JSON.parse(data);
+            if (tokenCountLabel && usage && typeof usage.total_tokens !== 'undefined') {
+              tokenCountLabel.textContent = `Tokens: ${usage.total_tokens}`;
+            }
           } catch {}
         } else if (event === 'done') {
           return;
@@ -190,5 +424,11 @@
     input.value = '';
     await streamAnswer(question);
   });
+
+  temperatureInput.addEventListener('input', updateTemperatureLabel);
+  maxTokensInput.addEventListener('change', normalizeTokenInput);
+  maxTokensInput.addEventListener('blur', normalizeTokenInput);
+  updateTemperatureLabel();
+  loadModels();
 </script>
 {% endblock %}

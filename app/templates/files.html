@@ -9,8 +9,8 @@
           data-folder-id="{{ node.id }}"
           draggable="true"
         >
-          <a class="flex-1" href="/files?folder_id={{ node.id }}">{{ node.name }}</a>
-          <form method="post" action="/files/folders/{{ node.id }}/delete" onsubmit="return confirm('Delete this folder?');">
+          <a class="flex-1" href="/articles?folder_id={{ node.id }}">{{ node.name }}</a>
+          <form method="post" action="/articles/folders/{{ node.id }}/delete" onsubmit="return confirm('Delete this folder?');">
             <button class="text-xs text-slate-400 hover:text-rose-500" type="submit">Delete</button>
           </form>
         </div>
@@ -29,9 +29,9 @@
   <aside class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
     <div class="flex items-center justify-between">
       <h2 class="text-lg font-semibold">Folders</h2>
-      <a class="text-xs text-slate-500 hover:text-slate-700" href="/files">Root</a>
+      <a class="text-xs text-slate-500 hover:text-slate-700" href="/articles">Root</a>
     </div>
-    <form class="mt-4 space-y-2" method="post" action="/files/folders">
+    <form class="mt-4 space-y-2" method="post" action="/articles/folders">
       <input class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" name="name" placeholder="New folder name" required />
       {% if active_folder_id %}
         <input type="hidden" name="parent_id" value="{{ active_folder_id }}" />
@@ -40,7 +40,7 @@
     </form>
     <div class="mt-6" id="folder-tree">
       <div class="folder-item mb-3 rounded-lg px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50" data-folder-id="" draggable="true">
-        <a class="block" href="/files">Root</a>
+        <a class="block" href="/articles">Root</a>
       </div>
       {{ render_folder(folders, active_folder_id) }}
     </div>
@@ -49,8 +49,8 @@
   <div class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
     <div class="flex items-center justify-between">
       <div>
-        <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Files</p>
-        <h1 class="mt-2 text-2xl font-semibold text-slate-900">Knowledge Base Files</h1>
+        <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Articles</p>
+        <h1 class="mt-2 text-2xl font-semibold text-slate-900">Knowledge Base Articles</h1>
       </div>
       <div class="text-xs text-slate-500">Drag articles into folders</div>
     </div>
@@ -76,7 +76,7 @@
               </td>
               <td class="px-4 py-3 text-slate-600">{{ article.metadata_.get('doc_type', 'other') }}</td>
               <td class="px-4 py-3 text-slate-600">{{ folder_paths.get(article.id, 'Root') }}</td>
-              <td class="px-4 py-3 text-slate-600">{{ article.updated_at }}</td>
+              <td class="px-4 py-3 text-slate-600">{{ article.updated_at | format_dt }}</td>
               <td class="px-4 py-3 text-slate-600">{{ version_counts.get(article.id, 0) }}</td>
               <td class="px-4 py-3">
                 <a class="text-xs text-slate-500 hover:text-slate-800" href="/articles/{{ article.id }}/edit">Edit</a>
@@ -124,17 +124,17 @@
       if (!droppedId) return;
       if (draggedFolderId !== null) {
         if (droppedId === folder.dataset.folderId) return;
-        await fetch(`/files/folders/${droppedId}/move`, {
+        await fetch(`/articles/folders/${droppedId}/move`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ parent_id: folder.dataset.folderId || null })
         });
       } else {
-        await fetch(`/files/articles/${droppedId}/move`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ folder_id: folder.dataset.folderId || null })
-        });
+        await fetch(`/articles/${droppedId}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_id: folder.dataset.folderId || null })
+      });
       }
       window.location.reload();
     });
