@@ -8,17 +8,18 @@ import re
 import uuid
 import urllib.request
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 import markdown
+from bs4 import BeautifulSoup
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
-from sqlalchemy import func, or_, text
+from sqlalchemy import Integer, cast, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -71,6 +72,17 @@ def render_markdown(text: Optional[str]) -> Markup:
 
 
 templates.env.filters["markdown"] = render_markdown
+
+
+def render_markdown_text(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    html = markdown.markdown(text, extensions=["extra", "nl2br", "sane_lists"])
+    soup = BeautifulSoup(html, "html.parser")
+    return re.sub(r"\s+", " ", soup.get_text(" ")).strip()
+
+
+templates.env.filters["markdown_text"] = render_markdown_text
 
 
 def format_dt(value: Any) -> str:
@@ -488,6 +500,53 @@ def auth_callback(request: Request, token: str, db: Session = Depends(get_db)):
     return response
 
 
+@app.get("/profile", response_class=HTMLResponse)
+def profile_ui(request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    total_tokens = (
+        db.query(
+            func.coalesce(
+                func.sum(cast(Article.metadata_["summary_tokens"]["total_tokens"].astext, Integer)),
+                0,
+            )
+        )
+        .filter(Article.owner_id == current_user.id)
+        .scalar()
+        or 0
+    )
+
+    return templates.TemplateResponse(
+        "profile.html",
+        _template_context(
+            request,
+            current_user,
+            session,
+            total_tokens=total_tokens,
+        ),
+    )
+
+
+@app.post("/profile")
+def profile_update(
+    request: Request,
+    mobile_phone: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    normalized = mobile_phone.strip() or None
+    current_user.mobile_phone = normalized
+    db.add(current_user)
+    db.commit()
+
+    return RedirectResponse(url="/profile", status_code=303)
+
+
 @app.post("/logout")
 def logout(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get(SESSION_COOKIE)
@@ -751,6 +810,27 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
         articles = list_query.order_by(Article.created_at.desc()).all()
 
     article_count = db.query(func.count(Article.id)).filter(Article.owner_id == current_user.id).scalar() or 0
+    today = datetime.utcnow().date()
+    start_date = today - timedelta(days=6)
+    daily_counts = (
+        db.query(func.date(Article.created_at).label("day"), func.count(Article.id))
+        .filter(Article.owner_id == current_user.id, Article.created_at >= start_date)
+        .group_by("day")
+        .order_by("day")
+        .all()
+    )
+    daily_counts_map = {day: count for day, count in daily_counts}
+    article_activity = []
+    for offset in range(7):
+        day = start_date + timedelta(days=offset)
+        article_activity.append(
+            {
+                "label": day.strftime("%b %d"),
+                "count": daily_counts_map.get(day, 0),
+                "date": day.isoformat(),
+            }
+        )
+    activity_max = max([item["count"] for item in article_activity], default=0)
     text_bytes = (
         db.query(func.coalesce(func.sum(func.length(Article.content_text)), 0))
         .filter(Article.owner_id == current_user.id)
@@ -790,6 +870,8 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
             user_data_size=user_data_size,
             llm_model=settings.llm_model,
             embedding_model=settings.embedding_model,
+            article_activity=article_activity,
+            article_activity_max=max(1, activity_max),
             articles=articles,
             query=query or "",
             category=selected_category,
@@ -1313,7 +1395,12 @@ def download_source(article_id: str, source_id: str, request: Request, db: Sessi
 
 
 @app.get("/articles", response_class=HTMLResponse)
-def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optional[str] = None):
+def files_ui(
+    request: Request,
+    db: Session = Depends(get_db),
+    folder_id: Optional[str] = None,
+    day: Optional[str] = None,
+):
     session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
@@ -1333,10 +1420,19 @@ def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optiona
             active_folder_id = None
 
     articles_query = db.query(Article).filter(Article.owner_id == current_user.id)
-    if active_folder_id:
-        articles_query = articles_query.filter(Article.folder_id == active_folder_id)
-    else:
-        articles_query = articles_query.filter(Article.folder_id.is_(None))
+    selected_day = None
+    if day:
+        try:
+            selected_day = datetime.fromisoformat(day).date()
+        except ValueError:
+            selected_day = None
+    if selected_day:
+        articles_query = articles_query.filter(func.date(Article.created_at) == selected_day)
+    if not selected_day:
+        if active_folder_id:
+            articles_query = articles_query.filter(Article.folder_id == active_folder_id)
+        else:
+            articles_query = articles_query.filter(Article.folder_id.is_(None))
     articles = articles_query.order_by(Article.updated_at.desc()).all()
     version_counts: dict[uuid.UUID, int] = {}
     article_folder_paths: dict[uuid.UUID, str] = {}
@@ -1362,6 +1458,7 @@ def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optiona
             session,
             folders=folder_tree,
             active_folder_id=str(active_folder_id) if active_folder_id else None,
+            selected_day=selected_day.isoformat() if selected_day else None,
             articles=articles,
             version_counts=version_counts,
             folder_paths=article_folder_paths,

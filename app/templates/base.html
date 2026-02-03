@@ -44,7 +44,7 @@
         </div>
         <div class="flex items-center gap-3 text-sm text-slate-500">
           {% if current_user %}
-            <span class="hidden md:inline">{{ current_user.email }}</span>
+            <a class="hidden md:inline transition hover:text-slate-900" href="/profile">{{ current_user.email }}</a>
             <form action="/logout" method="post">
               <button class="text-slate-600 transition hover:text-slate-900" type="submit">Logout</button>
             </form>
@@ -55,11 +55,6 @@
       </div>
     </header>
     <main class="mx-auto w-full max-w-6xl px-6 pb-16 pt-24">
-      {% if current_user and session_expires_in_days is not none %}
-        <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Session expires in {{ session_expires_in_days }} day{% if session_expires_in_days != 1 %}s{% endif %}.
-        </div>
-      {% endif %}
       {% block content %}{% endblock %}
     </main>
   </body>

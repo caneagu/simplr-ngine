@@ -18,6 +18,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    mobile_phone: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     articles = relationship("Article", back_populates="owner")

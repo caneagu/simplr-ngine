@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from typing import Any, Optional
 
 from bs4 import BeautifulSoup
@@ -22,6 +23,8 @@ class InboundEmail:
     attachments: list[InboundAttachment]
     message_id: Optional[str] = None
     inbound_id: Optional[str] = None
+    in_reply_to: Optional[str] = None
+    references: list[str] = field(default_factory=list)
 
 
 def _html_to_text(html: str) -> str:
@@ -80,6 +83,23 @@ def _normalize_attachments(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _extract_message_ids(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        collected: list[str] = []
+        for item in value:
+            collected.extend(_extract_message_ids(item))
+        return collected
+    if not isinstance(value, str):
+        return []
+    matches = re.findall(r"<[^>]+>", value)
+    if matches:
+        return [item.strip() for item in matches]
+    parts = re.split(r"\s+", value)
+    return [part.strip() for part in parts if part.strip()]
+
+
 def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
     data = payload.get("data") or payload.get("message") or payload
 
@@ -97,9 +117,29 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
     headers = data.get("headers") if isinstance(data, dict) else {}
 
     message_id = None
+    in_reply_to = None
+    references: list[str] = []
     if isinstance(headers, dict):
         message_id = headers.get("Message-ID") or headers.get("Message-Id")
+        in_reply_to = (
+            headers.get("In-Reply-To")
+            or headers.get("In-Reply-to")
+            or headers.get("in-reply-to")
+        )
+        references_header = headers.get("References") or headers.get("references")
+        references = _extract_message_ids(references_header)
+    if isinstance(data, dict):
+        if not in_reply_to:
+            in_reply_to = data.get("in_reply_to") or data.get("in-reply-to")
+        if not references:
+            references = _extract_message_ids(data.get("references"))
     inbound_id = data.get("id") if isinstance(data, dict) else None
+
+    in_reply_ids = _extract_message_ids(in_reply_to)
+    if in_reply_ids:
+        in_reply_to = in_reply_ids[0]
+        if len(in_reply_ids) > 1:
+            references.extend(in_reply_ids[1:])
 
     attachments_payload = _first_value(data, ["attachments", "attachment", "files"]) or []
     attachments_data = _normalize_attachments(attachments_payload)
@@ -143,4 +183,6 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
         attachments=attachments,
         message_id=message_id,
         inbound_id=inbound_id,
+        in_reply_to=in_reply_to,
+        references=references,
     )

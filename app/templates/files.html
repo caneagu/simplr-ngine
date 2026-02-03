@@ -51,6 +51,9 @@
       <div>
         <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Articles</p>
         <h1 class="mt-2 text-2xl font-semibold text-slate-900">Knowledge Base Articles</h1>
+        {% if selected_day %}
+          <p class="mt-2 text-xs text-slate-500">Showing articles created on {{ selected_day }}</p>
+        {% endif %}
       </div>
       <div class="text-xs text-slate-500">Drag articles into folders</div>
     </div>
@@ -72,7 +75,8 @@
             <tr class="article-row hover:bg-slate-50" draggable="true" data-article-id="{{ article.id }}">
               <td class="px-4 py-3">
                 <a class="font-medium text-slate-900 hover:text-blue-600" href="/articles/{{ article.id }}">{{ article.title }}</a>
-                <p class="mt-1 text-xs text-slate-500">{{ article.summary[:120] }}{% if article.summary|length > 120 %}...{% endif %}</p>
+                {% set summary_text = article.summary | markdown_text %}
+                <p class="mt-1 text-xs text-slate-500">{{ summary_text[:120] }}{% if summary_text|length > 120 %}...{% endif %}</p>
               </td>
               <td class="px-4 py-3 text-slate-600">{{ article.metadata_.get('doc_type', 'other') }}</td>
               <td class="px-4 py-3 text-slate-600">{{ folder_paths.get(article.id, 'Root') }}</td>

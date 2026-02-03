@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import smtplib
 from email.message import EmailMessage
+from email.utils import make_msgid
 
 import markdown
 
@@ -98,7 +99,7 @@ def send_article_reply(
     summary_markdown: str,
     article_url: str,
     summary_usage: dict[str, int] | None = None,
-) -> None:
+) -> str:
     if not settings.smtp_host or not settings.smtp_sender:
         raise RuntimeError("SMTP settings are not configured")
 
@@ -106,6 +107,8 @@ def send_article_reply(
     message["Subject"] = f"{settings.email_brand_name} saved your article"
     message["From"] = _email_from_header()
     message["To"] = recipient
+    message_id = make_msgid()
+    message["Message-ID"] = message_id
     usage_line = ""
     if summary_usage:
         total = summary_usage.get("total_tokens", 0)
@@ -143,3 +146,4 @@ def send_article_reply(
     )
     message.add_alternative(html_body, subtype="html")
     _send_message(message)
+    return message_id
