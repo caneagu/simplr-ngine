@@ -2,7 +2,7 @@
 
 ## Overview
 
-The RAG Email MVP is a FastAPI-based web application that implements a complete RAG (Retrieval-Augmented Generation) pipeline for email-based knowledge management. It combines email ingestion, document processing, vector search, and conversational AI in a single cohesive system.
+The Simplr is a FastAPI-based web application that implements a complete RAG (Retrieval-Augmented Generation) pipeline for email-based knowledge management. It combines email ingestion, document processing, vector search, and conversational AI in a single cohesive system.
 
 ## System Architecture
 

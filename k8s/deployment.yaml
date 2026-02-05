@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-email-mvp
+  labels:
+    app: rag-email-mvp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-email-mvp
+  template:
+    metadata:
+      labels:
+        app: rag-email-mvp
+    spec:
+      containers:
+        - name: rag-email-mvp
+          image: rag-email-mvp:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: database_url
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: openai_api_key
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: openrouter_api_key
+            - name: SMTP_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: smtp_host
+            - name: SMTP_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: smtp_port
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: smtp_user
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: smtp_password
+            - name: SMTP_SENDER
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: smtp_sender
+            - name: SMTP_SENDER_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: smtp_sender_name
+            - name: EMAIL_BRAND_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: email_brand_name
+            - name: APP_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rag-email-mvp-secrets
+                  key: app_base_url
+            - name: LLM_PROVIDER
+              value: "openai"
+            - name: LLM_MODEL
+              value: "gpt-4o-mini"
+            - name: EMBEDDING_MODEL
+              value: "text-embedding-3-small"
+            - name: STORAGE_DIR
+              value: "/app/storage"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: storage
+              mountPath: /app/storage
+      volumes:
+        - name: storage
+          emptyDir: {}

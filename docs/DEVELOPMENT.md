@@ -20,7 +20,7 @@ sudo systemctl start postgresql
 
 ```bash
 git clone <repo-url>
-cd rag-email-mvp
+cd simplr
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt

@@ -1,6 +1,6 @@
 # Deployment Guide
 
-Complete guide for deploying the RAG Email MVP to production environments.
+Complete guide for deploying the Simplr to production environments.
 
 ## Table of Contents
 
@@ -241,7 +241,7 @@ http {
 ```bash
 # 1. Clone repository on server
 git clone <repo-url>
-cd rag-email-mvp
+cd simplr
 
 # 2. Create environment file
 cat > .env << EOF
@@ -325,7 +325,7 @@ resource "aws_ecs_task_definition" "app" {
 
   container_definitions = jsonencode([{
     name  = "app"
-    image = "your-registry/rag-email-mvp:latest"
+    image = "your-registry/simplr:latest"
     portMappings = [{
       containerPort = 8000
     }]

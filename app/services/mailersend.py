@@ -25,6 +25,7 @@ class InboundEmail:
     inbound_id: Optional[str] = None
     in_reply_to: Optional[str] = None
     references: list[str] = field(default_factory=list)
+    recipients: list[str] = field(default_factory=list)
 
 
 def _html_to_text(html: str) -> str:
@@ -57,6 +58,25 @@ def _extract_sender(sender_value: Any) -> str:
     if isinstance(sender_value, str):
         return sender_value
     return "unknown@example.com"
+
+
+def _extract_recipients(value: Any) -> list[str]:
+    recipients: list[str] = []
+    if not value:
+        return recipients
+    if isinstance(value, list):
+        for item in value:
+            recipients.extend(_extract_recipients(item))
+        return recipients
+    if isinstance(value, dict):
+        for key in ["email", "address", "value", "to", "recipient"]:
+            if value.get(key):
+                recipients.extend(_extract_recipients(value.get(key)))
+        return recipients
+    if isinstance(value, str):
+        parts = re.split(r"[,\s]+", value)
+        return [part.strip() for part in parts if "@" in part]
+    return recipients
 
 
 def _decode_base64(value: Any) -> Optional[bytes]:
@@ -143,6 +163,10 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
 
     attachments_payload = _first_value(data, ["attachments", "attachment", "files"]) or []
     attachments_data = _normalize_attachments(attachments_payload)
+    recipients_value = _first_value(data, ["to", "recipients", "recipient", "to_email", "rcpt_to"])
+    recipients = _extract_recipients(recipients_value)
+    if isinstance(headers, dict):
+        recipients.extend(_extract_recipients(headers.get("To")))
 
     attachments: list[InboundAttachment] = []
     for attachment in attachments_data:
@@ -185,4 +209,5 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
         inbound_id=inbound_id,
         in_reply_to=in_reply_to,
         references=references,
+        recipients=[item.lower() for item in recipients if item],
     )

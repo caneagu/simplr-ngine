@@ -13,8 +13,21 @@ from app.constants import CATEGORY_OPTIONS, DOC_TYPE_OPTIONS
 from app.services.tokens import count_tokens
 
 
-def _openai_kwargs(provider: Optional[str] = None) -> dict:
+def _openai_kwargs(provider: Optional[str] = None, inference: Optional[dict[str, str]] = None) -> dict:
     active_provider = provider or settings.llm_provider
+    if inference and inference.get("api_key"):
+        base_url = inference.get("base_url")
+        inferred_provider = inference.get("provider") or active_provider
+        if inferred_provider == "openrouter" or base_url:
+            return {
+                "api_key": inference["api_key"],
+                "base_url": base_url or settings.openrouter_base_url,
+                "default_headers": {
+                    "HTTP-Referer": settings.app_base_url or "http://localhost",
+                    "X-Title": inference.get("title") or "simplr",
+                },
+            }
+        return {"api_key": inference["api_key"], **({"base_url": base_url} if base_url else {})}
     if active_provider == "openrouter":
         if not settings.openrouter_api_key:
             return {}
@@ -22,8 +35,8 @@ def _openai_kwargs(provider: Optional[str] = None) -> dict:
             "api_key": settings.openrouter_api_key,
             "base_url": settings.openrouter_base_url,
             "default_headers": {
-                "HTTP-Referer": "http://localhost",
-                "X-Title": "rag-email-mvp",
+                "HTTP-Referer": settings.app_base_url or "http://localhost",
+                "X-Title": "simplr",
             },
         }
     if not settings.openai_api_key:
@@ -36,8 +49,9 @@ def get_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ) -> Optional[ChatOpenAI]:
-    kwargs = _openai_kwargs(provider)
+    kwargs = _openai_kwargs(provider, inference)
     if not kwargs:
         return None
     model_name = model or settings.llm_model
@@ -85,13 +99,13 @@ FREE_SYSTEM_PROMPT = (
 )
 
 
-def summarize_text(text: str) -> str:
-    summary, _usage = summarize_text_with_usage(text)
+def summarize_text(text: str, inference: Optional[dict[str, str]] = None) -> str:
+    summary, _usage = summarize_text_with_usage(text, inference=inference)
     return summary
 
 
-def summarize_text_with_usage(text: str) -> tuple[str, dict[str, int]]:
-    llm = get_llm()
+def summarize_text_with_usage(text: str, inference: Optional[dict[str, str]] = None) -> tuple[str, dict[str, int]]:
+    llm = get_llm(inference=inference)
     if llm is None:
         summary = text[:700].strip()
         prompt_tokens = count_tokens(text)
@@ -148,8 +162,8 @@ def _fallback_classification() -> dict:
     }
 
 
-def categorize_and_extract(text: str) -> dict:
-    llm = get_llm()
+def categorize_and_extract(text: str, inference: Optional[dict[str, str]] = None) -> dict:
+    llm = get_llm(inference=inference)
     if llm is None:
         return _fallback_classification()
 
@@ -207,8 +221,8 @@ def categorize_and_extract(text: str) -> dict:
     }
 
 
-def extract_insights(text: str) -> dict:
-    llm = get_llm()
+def extract_insights(text: str, inference: Optional[dict[str, str]] = None) -> dict:
+    llm = get_llm(inference=inference)
     if llm is None:
         return {}
 
@@ -256,8 +270,9 @@ def answer_with_context(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ) -> str:
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return "LLM is not configured. Set your API key to enable answers."
 
@@ -277,8 +292,9 @@ def answer_freely(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ) -> str:
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return "LLM is not configured. Set your API key to enable answers."
 
@@ -300,8 +316,9 @@ def stream_answer_with_context(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ):
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return ["LLM is not configured. Set your API key to enable answers."]
 
@@ -326,8 +343,9 @@ def stream_answer_freely(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ):
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return ["LLM is not configured. Set your API key to enable answers."]
 
@@ -345,10 +363,10 @@ def stream_answer_freely(
             yield content
 
 
-def extract_text_from_images(image_bytes: list[bytes]) -> str:
+def extract_text_from_images(image_bytes: list[bytes], inference: Optional[dict[str, str]] = None) -> str:
     if not image_bytes:
         return ""
-    llm = get_llm(model=settings.vision_model)
+    llm = get_llm(model=settings.vision_model, inference=inference)
     if llm is None:
         return ""
     content_parts = [{"type": "text", "text": "Extract the text from these images. Return plain text."}]

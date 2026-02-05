@@ -3,16 +3,35 @@
 {% block content %}
 <div class="grid gap-6 lg:grid-cols-[1.6fr_0.8fr]">
   <section class="rounded-2xl border border-gray-100 bg-white p-8 shadow-sm">
-    <header class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <header class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div>
         <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Knowledge Chat</p>
         <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-900">Ask your RAG assistant</h1>
         <p class="mt-2 text-sm text-slate-500">Get grounded answers, plus a live list of cited articles.</p>
       </div>
-      <div class="rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 text-xs text-slate-500">
-        Streaming mode enabled
+      <div class="flex flex-col gap-2 md:items-end md:text-right">
+        <form class="flex flex-wrap items-center gap-3 text-right" method="get" action="/chat" id="kb-switch">
+          <input type="hidden" name="scope" id="kb-scope" value="{{ scope }}" />
+          <label class="text-xs uppercase tracking-[0.2em] text-slate-400" for="kb-selector">Knowledge base</label>
+          <select class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" id="kb-selector" name="group_id">
+            <option value="" {% if scope != 'group' %}selected{% endif %}>Personal</option>
+            {% for group in groups %}
+              <option value="{{ group.id }}" {% if selected_group and group.id == selected_group.id %}selected{% endif %}>
+                {{ group.name }} ({{ group.slug }}@simplr.ro)
+              </option>
+            {% endfor %}
+          </select>
+        </form>
       </div>
     </header>
+    {% if scope == 'group' and selected_group %}
+      <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
+        <span class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-blue-600">
+          Team KB: {{ selected_group.name }}
+        </span>
+        <a class="rounded-full border border-gray-200 px-3 py-1 text-slate-500 hover:text-slate-700" href="/chat">Clear team filter</a>
+      </div>
+    {% endif %}
 
     <div class="mt-6 h-[28rem] overflow-y-auto rounded-2xl border border-gray-200 bg-gray-50 p-6" id="chat-thread">
       <div class="flex">
@@ -23,7 +42,21 @@
     </div>
 
     <form class="mt-6 space-y-4" id="chat-form">
-      <div class="grid gap-3 md:grid-cols-3">
+      <input type="hidden" id="chat-scope" name="scope" value="{{ scope }}" />
+      <input type="hidden" id="chat-group-id" name="group_id" value="{% if selected_group %}{{ selected_group.id }}{% endif %}" />
+      <input type="hidden" id="chat-inference-id" name="inference_id" value="" />
+      <div class="grid gap-3 md:grid-cols-4">
+        <div>
+          <label class="text-xs uppercase tracking-wide text-slate-400">Inference</label>
+          <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-inference">
+            <option value="">Default (profile)</option>
+            {% for config in inference_configs %}
+              <option value="{{ config.id }}">
+                {{ config.name }}{% if config.base_url %} ({{ config.base_url }}){% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
         <div>
           <label class="text-xs uppercase tracking-wide text-slate-400">Model</label>
           <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model">
@@ -115,11 +148,17 @@
   const errorBox = document.getElementById('chat-error');
   const contextBox = document.getElementById('chat-context');
   const modelSelect = document.getElementById('chat-model');
+  const inferenceSelect = document.getElementById('chat-inference');
   const temperatureInput = document.getElementById('chat-temperature');
   const temperatureLabel = document.getElementById('chat-temperature-label');
   const maxTokensInput = document.getElementById('chat-max-tokens');
   const groundingToggle = document.getElementById('chat-grounding');
   const tokenCountLabel = document.getElementById('chat-token-count');
+  const inferenceIdInput = document.getElementById('chat-inference-id');
+  const kbSelector = document.getElementById('kb-selector');
+  const kbScope = document.getElementById('kb-scope');
+  const chatScope = document.getElementById('chat-scope');
+  const chatGroupId = document.getElementById('chat-group-id');
   let refsByIndex = {};
   let lastAnswerContent = null;
   const TEMPERATURE_PRESETS = [
@@ -318,10 +357,13 @@
       body: JSON.stringify({
         question,
         model: modelSelect.value || null,
-        provider: 'openrouter',
+        provider: null,
         temperature: getSelectedTemperature(),
         max_tokens: maxTokens,
-        ground: groundingToggle.checked
+        ground: groundingToggle.checked,
+        inference_id: inferenceSelect ? inferenceSelect.value : null,
+        scope: chatScope ? chatScope.value : null,
+        group_id: chatGroupId ? chatGroupId.value : null
       })
     });
 
@@ -424,6 +466,27 @@
     input.value = '';
     await streamAnswer(question);
   });
+
+  if (inferenceSelect && inferenceIdInput) {
+    inferenceSelect.addEventListener('change', () => {
+      inferenceIdInput.value = inferenceSelect.value || '';
+    });
+  }
+
+  if (kbSelector && kbScope && chatScope && chatGroupId) {
+    kbSelector.addEventListener('change', () => {
+      if (!kbSelector.value) {
+        kbScope.value = 'personal';
+        chatScope.value = 'personal';
+        chatGroupId.value = '';
+      } else {
+        kbScope.value = 'group';
+        chatScope.value = 'group';
+        chatGroupId.value = kbSelector.value;
+      }
+      document.getElementById('kb-switch').submit();
+    });
+  }
 
   temperatureInput.addEventListener('input', updateTemperatureLabel);
   maxTokensInput.addEventListener('change', normalizeTokenInput);
