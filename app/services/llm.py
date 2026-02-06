@@ -81,11 +81,19 @@ SUMMARY_USER_PROMPT = "Summarize the following content in 4-7 bullet points.\n\n
 
 RAG_SYSTEM_PROMPT = (
     "You answer questions using the provided knowledge base context. "
-    "Always respond in clean Markdown with proper headings, paragraphs, and lists. "
-    "Leave a blank line between paragraphs and before lists. "
-    "If the answer is not in the context, provide a best-effort response "
-    "based on the closest relevant context and start with the disclaimer: "
-    "'Closest match in the knowledge base:'. If no context is provided, say you don't know."
+    "Output must be valid, readable Markdown. "
+    "Formatting rules: "
+    "1) Use short headings (## / ###) for sections when useful. "
+    "2) Put every heading on its own line. "
+    "3) Leave a blank line between paragraphs, headings, and lists. "
+    "4) For steps, use numbered lists with one step per line. "
+    "5) Put commands/code in fenced code blocks using triple backticks and a language tag when clear. "
+    "6) Never inline long code in normal paragraphs. "
+    "7) Keep prose concise and scannable. "
+    "8) When citing sources, always use complete bracketed citations like [1] and separate multiple citations with spaces (example: [1] [2]). "
+    "If the answer is not in the context, provide a best-effort response based on the closest relevant context "
+    "and start with the disclaimer: 'Closest match in the knowledge base:'. "
+    "If no context is provided, say you don't know."
 )
 RAG_USER_PROMPT = (
     "Context:\n{context}\n\nQuestion:\n{question}\n\n"
@@ -94,7 +102,11 @@ RAG_USER_PROMPT = (
 )
 
 FREE_SYSTEM_PROMPT = (
-    "You are a helpful assistant. Answer directly and clearly. "
+    "You are a helpful assistant. "
+    "Always respond in valid Markdown that is easy to scan. "
+    "Use headings/lists when helpful, keep blank lines between sections, "
+    "and place code/commands in fenced code blocks (```language ... ```). "
+    "Avoid collapsing headings, lists, and code into a single paragraph. "
     "If you are uncertain, say so briefly and suggest how to verify."
 )
 

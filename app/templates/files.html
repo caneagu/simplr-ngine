@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% macro render_folder(nodes, active_id) %}
+{% macro render_folder(nodes, active_id, scope_query) %}
   <ul class="space-y-2">
     {% for node in nodes %}
       <li>
@@ -16,7 +16,7 @@
         </div>
         {% if node.children %}
           <div class="ml-4 mt-2">
-            {{ render_folder(node.children, active_id) }}
+            {{ render_folder(node.children, active_id, scope_query) }}
           </div>
         {% endif %}
       </li>
@@ -52,7 +52,7 @@
       <div class="folder-item mb-3 rounded-lg px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50" data-folder-id="" draggable="true">
         <a class="block" href="/articles{% if scope_query %}?{{ scope_query.lstrip('&') }}{% endif %}">Root</a>
       </div>
-      {{ render_folder(folders, active_folder_id) }}
+      {{ render_folder(folders, active_folder_id, scope_query) }}
     </div>
   </aside>
 
@@ -70,6 +70,7 @@
 
     <form class="mt-4 flex flex-wrap items-center gap-3" method="get" action="/articles" id="kb-switch">
       <input type="hidden" name="day" value="{{ selected_day or '' }}" />
+      <input type="hidden" name="folder_id" value="{{ active_folder_id or '' }}" />
       <input type="hidden" name="scope" id="kb-scope" value="{{ scope }}" />
       <label class="text-xs uppercase tracking-[0.2em] text-slate-400" for="kb-selector">Knowledge base</label>
       <select class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" id="kb-selector" name="group_id">

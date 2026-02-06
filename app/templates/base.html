@@ -13,6 +13,9 @@
       body {
         font-family: "Inter", sans-serif;
       }
+      .app-shell {
+        min-height: 100vh;
+      }
       .summary-clamp {
         display: -webkit-box;
         -webkit-line-clamp: 2;
@@ -27,35 +30,264 @@
         margin: 0;
         padding-left: 1.25rem;
       }
+      dialog::backdrop {
+        background: rgba(15, 23, 42, 0.35);
+        backdrop-filter: blur(3px);
+      }
+      .side-nav-link svg {
+        width: 18px;
+        height: 18px;
+      }
+      .side-nav-link {
+        transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+      }
+      .side-nav-link.active {
+        background: #f1f5f9;
+        color: #0f172a;
+        font-weight: 600;
+      }
+      .sidebar-collapse-only {
+        display: none;
+      }
+      .sidebar-edge-toggle {
+        position: absolute;
+        right: -14px;
+        top: 108px;
+        height: 28px;
+        width: 28px;
+        border-radius: 999px;
+        border: 1px solid #e2e8f0;
+        background: #ffffff;
+        color: #475569;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .sidebar-edge-toggle svg {
+        width: 14px;
+        height: 14px;
+      }
+      body.flat-ui .border,
+      body.flat-ui .border-t,
+      body.flat-ui .border-r,
+      body.flat-ui .border-b,
+      body.flat-ui .border-l,
+      body.flat-ui .border-slate-200,
+      body.flat-ui .border-slate-300,
+      body.flat-ui .border-blue-100,
+      body.flat-ui .border-gray-100,
+      body.flat-ui .border-gray-200,
+      body.flat-ui .border-gray-300,
+      body.flat-ui .border-rose-200,
+      body.flat-ui .border-amber-200 {
+        border-color: transparent !important;
+      }
+      body.flat-ui .shadow,
+      body.flat-ui .shadow-sm,
+      body.flat-ui .shadow-md,
+      body.flat-ui .shadow-lg,
+      body.flat-ui .shadow-xl,
+      body.flat-ui .shadow-2xl,
+      body.flat-ui [class*="shadow-"] {
+        box-shadow: none !important;
+      }
+
+      body.sidebar-collapsed #app-sidebar {
+        width: 78px;
+      }
+      body.sidebar-collapsed #app-main {
+        margin-left: 78px;
+      }
+      body.sidebar-collapsed .sidebar-collapse-hide {
+        display: none !important;
+      }
+      body.sidebar-collapsed .sidebar-collapse-only {
+        display: inline-flex;
+      }
+      body.sidebar-collapsed .side-nav-link {
+        justify-content: center;
+        padding-left: 0;
+        padding-right: 0;
+      }
+      body.sidebar-collapsed .account-chip {
+        justify-content: center;
+      }
+      body.sidebar-collapsed .account-chip-text {
+        display: none;
+      }
+      body.sidebar-collapsed .account-chip {
+        gap: 0;
+      }
+      body.sidebar-initializing #app-sidebar,
+      body.sidebar-initializing #app-main {
+        transition: none !important;
+      }
+
+      @media (max-width: 1024px) {
+        #app-sidebar {
+          transform: translateX(-100%);
+          width: 256px !important;
+        }
+        body.sidebar-open #app-sidebar {
+          transform: translateX(0);
+        }
+        #app-main {
+          margin-left: 0 !important;
+        }
+        .sidebar-edge-toggle {
+          display: none !important;
+        }
+      }
     </style>
   </head>
-  <body class="bg-white text-slate-900 min-h-screen selection:bg-blue-100 selection:text-blue-900">
-    <header class="fixed left-0 top-0 z-50 w-full border-b border-gray-100 bg-white/90 px-6 py-4 backdrop-blur">
-      <div class="mx-auto flex w-full max-w-6xl items-center justify-between">
-        <div class="flex items-center gap-6">
-          <div class="text-xl font-extrabold tracking-tighter lowercase select-none">
-            <span>simplr<span class="text-blue-600">.</span></span>
+  <body class="flat-ui sidebar-initializing bg-slate-50 text-slate-900 min-h-screen selection:bg-blue-100 selection:text-blue-900">
+    <div class="app-shell">
+      {% if current_user %}
+      {% set current_path = request.url.path %}
+      {% set email_local = current_user.email.split('@')[0] %}
+      <aside id="app-sidebar" class="fixed left-0 top-0 z-50 h-screen w-64 border-r border-slate-200 bg-white transition-[width,transform] duration-200 ease-out">
+        <button id="sidebar-edge-toggle" class="sidebar-edge-toggle hidden lg:inline-flex" type="button" aria-label="Toggle sidebar">
+          <svg id="sidebar-edge-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+          <svg id="sidebar-edge-closed" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <div class="flex h-full flex-col p-4">
+          <div class="mb-6 grid grid-cols-[1fr_auto] items-center">
+            <a class="sidebar-collapse-hide justify-self-center text-xl font-extrabold tracking-tighter lowercase select-none" href="/insights">
+              <span>simplr<span class="text-blue-600">.</span></span>
+            </a>
+            <a class="sidebar-collapse-only justify-self-center rounded-md p-1 text-lg font-extrabold tracking-tight text-slate-800" href="/insights" aria-label="Simplr">
+              s<span class="text-blue-600">.</span>
+            </a>
+            <button id="sidebar-close" class="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 lg:hidden" type="button" aria-label="Close menu">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 6-12 12"/><path d="m6 6 12 12"/></svg>
+            </button>
           </div>
-          <nav class="flex items-center gap-4 text-sm font-medium text-slate-600">
-            <a class="transition hover:text-slate-900" href="/insights">Insights</a>
-            <a class="transition hover:text-slate-900" href="/articles">Articles</a>
-            <a class="transition hover:text-slate-900" href="/chat">Chat</a>
+
+          <nav class="space-y-1 text-sm font-medium text-slate-700">
+            <a class="side-nav-link {% if current_path == '/' or current_path.startswith('/insights') %}active{% endif %} flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-slate-100" href="/insights">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12.5 12 4l9 8.5"/><path d="M5 10.5V20h14v-9.5"/></svg>
+              <span class="sidebar-collapse-hide">Insights</span>
+            </a>
+            <a class="side-nav-link {% if current_path.startswith('/articles') %}active{% endif %} flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-slate-100" href="/articles">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h10l4 4v12H5z"/><path d="M15 4v4h4"/><path d="M8 12h8"/><path d="M8 16h8"/></svg>
+              <span class="sidebar-collapse-hide">Articles</span>
+            </a>
+            <a class="side-nav-link {% if current_path.startswith('/chat') %}active{% endif %} flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-slate-100" href="/chat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16v10H8l-4 4z"/><path d="M8 10h8"/><path d="M8 13h5"/></svg>
+              <span class="sidebar-collapse-hide">Chat</span>
+            </a>
           </nav>
+
+          <div class="mt-auto pt-4">
+            <div class="relative">
+              <div class="account-chip flex w-full items-center gap-3 px-1 py-2">
+                <a class="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 text-xs font-semibold text-white" href="/profile" aria-label="Profile">
+                  {{ email_local[:2] | upper }}
+                </a>
+                <button id="account-toggle" class="account-chip-text min-w-0 text-left" type="button" aria-haspopup="menu" aria-expanded="false">
+                  <p class="truncate text-sm font-medium leading-tight text-slate-900">{{ email_local.replace('.', ' ') | title }}</p>
+                </button>
+              </div>
+              <div id="account-menu" class="absolute bottom-14 left-0 hidden w-full overflow-hidden rounded-xl bg-white py-1 text-sm text-slate-700 ring-1 ring-slate-200">
+                <a class="flex items-center gap-2 px-3 py-2 hover:bg-slate-100" href="/profile">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" class="h-4 w-4"><circle cx="12" cy="8" r="4"/><path d="M4 20c2-4 5-6 8-6s6 2 8 6"/></svg>
+                  <span>Profile</span>
+                </a>
+                <form action="/logout" method="post">
+                  <button class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-slate-100" type="submit">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" class="h-4 w-4"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+                    <span>Disconnect</span>
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="flex items-center gap-3 text-sm text-slate-500">
-          {% if current_user %}
-            <a class="hidden md:inline transition hover:text-slate-900" href="/profile">{{ current_user.email }}</a>
-            <form action="/logout" method="post">
-              <button class="text-slate-600 transition hover:text-slate-900" type="submit">Logout</button>
-            </form>
-          {% else %}
-            <a class="text-slate-600 transition hover:text-slate-900" href="/login">Login</a>
-          {% endif %}
-        </div>
+      </aside>
+      {% endif %}
+
+      <div id="app-main" class="{% if current_user %}ml-64{% endif %} transition-all duration-200 ease-out">
+        <main class="w-full px-4 pb-10 pt-6 sm:px-6">
+          {% block content %}{% endblock %}
+        </main>
       </div>
-    </header>
-    <main class="mx-auto w-full max-w-6xl px-6 pb-16 pt-24">
-      {% block content %}{% endblock %}
-    </main>
+    </div>
+
+    <script>
+      (function () {
+        const body = document.body;
+        const edgeToggle = document.getElementById("sidebar-edge-toggle");
+        const edgeOpen = document.getElementById("sidebar-edge-open");
+        const edgeClosed = document.getElementById("sidebar-edge-closed");
+        const closeBtn = document.getElementById("sidebar-close");
+        const accountToggle = document.getElementById("account-toggle");
+        const accountMenu = document.getElementById("account-menu");
+        const mq = window.matchMedia("(max-width: 1024px)");
+        const key = "simplr_sidebar_collapsed";
+
+        const applyDesktopState = () => {
+          if (mq.matches) return;
+          const collapsed = localStorage.getItem(key) === "1";
+          body.classList.toggle("sidebar-collapsed", collapsed);
+          if (edgeOpen && edgeClosed) {
+            edgeOpen.classList.toggle("hidden", collapsed);
+            edgeClosed.classList.toggle("hidden", !collapsed);
+          }
+        };
+
+        const onToggle = () => {
+          if (mq.matches) {
+            body.classList.toggle("sidebar-open");
+            return;
+          }
+          const nextCollapsed = !body.classList.contains("sidebar-collapsed");
+          body.classList.toggle("sidebar-collapsed", nextCollapsed);
+          localStorage.setItem(key, nextCollapsed ? "1" : "0");
+          applyDesktopState();
+        };
+
+        if (edgeToggle) edgeToggle.addEventListener("click", onToggle);
+
+        if (closeBtn) {
+          closeBtn.addEventListener("click", () => {
+            body.classList.remove("sidebar-open");
+          });
+        }
+
+        document.addEventListener("click", (event) => {
+          if (!mq.matches || !body.classList.contains("sidebar-open")) return;
+          const sidebar = document.getElementById("app-sidebar");
+          if (!sidebar) return;
+          if (sidebar.contains(event.target) || (edgeToggle && edgeToggle.contains(event.target))) return;
+          body.classList.remove("sidebar-open");
+        });
+
+        if (accountToggle && accountMenu) {
+          accountToggle.addEventListener("click", () => {
+            const isHidden = accountMenu.classList.contains("hidden");
+            accountMenu.classList.toggle("hidden", !isHidden);
+            accountToggle.setAttribute("aria-expanded", isHidden ? "true" : "false");
+          });
+
+          document.addEventListener("click", (event) => {
+            if (accountMenu.classList.contains("hidden")) return;
+            if (accountToggle.contains(event.target) || accountMenu.contains(event.target)) return;
+            accountMenu.classList.add("hidden");
+            accountToggle.setAttribute("aria-expanded", "false");
+          });
+        }
+
+        applyDesktopState();
+        requestAnimationFrame(() => {
+          body.classList.remove("sidebar-initializing");
+        });
+        mq.addEventListener("change", () => {
+          if (!mq.matches) {
+            body.classList.remove("sidebar-open");
+            applyDesktopState();
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

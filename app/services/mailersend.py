@@ -120,6 +120,21 @@ def _extract_message_ids(value: Any) -> list[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
+def _first_message_id(value: Any) -> Optional[str]:
+    ids = _extract_message_ids(value)
+    if not ids:
+        return None
+    return ids[0].strip().lower()
+
+
+def _header_value(headers: dict[str, Any], key: str) -> Optional[str]:
+    target = key.lower()
+    for header_key, value in headers.items():
+        if str(header_key).lower() == target:
+            return value
+    return None
+
+
 def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
     data = payload.get("data") or payload.get("message") or payload
 
@@ -140,20 +155,21 @@ def parse_mailersend_payload(payload: dict[str, Any]) -> InboundEmail:
     in_reply_to = None
     references: list[str] = []
     if isinstance(headers, dict):
-        message_id = headers.get("Message-ID") or headers.get("Message-Id")
+        message_id = _header_value(headers, "message-id")
         in_reply_to = (
-            headers.get("In-Reply-To")
-            or headers.get("In-Reply-to")
-            or headers.get("in-reply-to")
+            _header_value(headers, "in-reply-to")
         )
-        references_header = headers.get("References") or headers.get("references")
+        references_header = _header_value(headers, "references")
         references = _extract_message_ids(references_header)
     if isinstance(data, dict):
+        if not message_id:
+            message_id = data.get("message_id") or data.get("message-id")
         if not in_reply_to:
             in_reply_to = data.get("in_reply_to") or data.get("in-reply-to")
         if not references:
             references = _extract_message_ids(data.get("references"))
     inbound_id = data.get("id") if isinstance(data, dict) else None
+    message_id = _first_message_id(message_id)
 
     in_reply_ids = _extract_message_ids(in_reply_to)
     if in_reply_ids:

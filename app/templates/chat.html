@@ -2,36 +2,15 @@
 
 {% block content %}
 <div class="grid gap-6 lg:grid-cols-[1.6fr_0.8fr]">
-  <section class="rounded-2xl border border-gray-100 bg-white p-8 shadow-sm">
+  <section class="min-w-0 rounded-2xl border border-gray-100 bg-white p-8 shadow-sm">
     <header class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div>
         <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Knowledge Chat</p>
         <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-900">Ask your RAG assistant</h1>
         <p class="mt-2 text-sm text-slate-500">Get grounded answers, plus a live list of cited articles.</p>
       </div>
-      <div class="flex flex-col gap-2 md:items-end md:text-right">
-        <form class="flex flex-wrap items-center gap-3 text-right" method="get" action="/chat" id="kb-switch">
-          <input type="hidden" name="scope" id="kb-scope" value="{{ scope }}" />
-          <label class="text-xs uppercase tracking-[0.2em] text-slate-400" for="kb-selector">Knowledge base</label>
-          <select class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" id="kb-selector" name="group_id">
-            <option value="" {% if scope != 'group' %}selected{% endif %}>Personal</option>
-            {% for group in groups %}
-              <option value="{{ group.id }}" {% if selected_group and group.id == selected_group.id %}selected{% endif %}>
-                {{ group.name }} ({{ group.slug }}@simplr.ro)
-              </option>
-            {% endfor %}
-          </select>
-        </form>
-      </div>
+      <div></div>
     </header>
-    {% if scope == 'group' and selected_group %}
-      <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
-        <span class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-blue-600">
-          Team KB: {{ selected_group.name }}
-        </span>
-        <a class="rounded-full border border-gray-200 px-3 py-1 text-slate-500 hover:text-slate-700" href="/chat">Clear team filter</a>
-      </div>
-    {% endif %}
 
     <div class="mt-6 h-[28rem] overflow-y-auto rounded-2xl border border-gray-200 bg-gray-50 p-6" id="chat-thread">
       <div class="flex">
@@ -45,38 +24,30 @@
       <input type="hidden" id="chat-scope" name="scope" value="{{ scope }}" />
       <input type="hidden" id="chat-group-id" name="group_id" value="{% if selected_group %}{{ selected_group.id }}{% endif %}" />
       <input type="hidden" id="chat-inference-id" name="inference_id" value="" />
-      <div class="grid gap-3 md:grid-cols-4">
-        <div>
-          <label class="text-xs uppercase tracking-wide text-slate-400">Inference</label>
-          <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-inference">
-            <option value="">Default (profile)</option>
-            {% for config in inference_configs %}
-              <option value="{{ config.id }}">
-                {{ config.name }}{% if config.base_url %} ({{ config.base_url }}){% endif %}
-              </option>
-            {% endfor %}
-          </select>
+      <div class="flex items-center justify-between gap-3 text-xs text-slate-500">
+        <div class="flex flex-wrap items-center gap-3" id="kb-switch-wrap">
+          <label class="flex items-center gap-3">
+          <input class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600/20" id="chat-grounding" name="ground" type="checkbox" checked />
+          Grounded answers with citations
+          </label>
+          <div class="flex flex-wrap items-center gap-2" id="kb-switch">
+            <select class="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" id="kb-selector" name="group_id">
+              <option value="" {% if scope != 'group' %}selected{% endif %}>Personal</option>
+              {% for group in groups %}
+                <option value="{{ group.id }}" {% if selected_group and group.id == selected_group.id %}selected{% endif %}>
+                  {{ group.name }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
         </div>
-        <div>
-          <label class="text-xs uppercase tracking-wide text-slate-400">Model</label>
-          <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model">
-            <option value="">Default (settings)</option>
-          </select>
-        </div>
-        <div>
-          <label class="text-xs uppercase tracking-wide text-slate-400">Creativity</label>
-          <input class="mt-3 w-full" id="chat-temperature" type="range" min="0" max="4" step="1" value="1" />
-          <p class="mt-2 text-xs text-slate-500" id="chat-temperature-label">Focused</p>
-        </div>
-        <div>
-          <label class="text-xs uppercase tracking-wide text-slate-400">Max tokens</label>
-          <input class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-max-tokens" type="number" min="64" max="4000" step="64" value="800" />
-        </div>
+        <button class="inline-flex items-center justify-center rounded-md border border-gray-200 p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700" id="chat-settings-open" type="button" aria-label="Open chat settings">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/>
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.03.03a2 2 0 1 1-2.83 2.83l-.03-.03A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.04a1.7 1.7 0 0 0-.4-1.1 1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.03.03a2 2 0 0 1-2.83-2.83l.03-.03A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.9a2 2 0 1 1 0-4h.04a1.7 1.7 0 0 0 1.1-.4 1.7 1.7 0 0 0 .6-1A1.7 1.7 0 0 0 4.26 6.3l-.03-.03a2 2 0 1 1 2.83-2.83l.03.03A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V2.9a2 2 0 1 1 4 0v.04a1.7 1.7 0 0 0 .4 1.1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.03-.03a2 2 0 1 1 2.83 2.83l-.03.03A1.7 1.7 0 0 0 19.4 9c.28.3.48.64.6 1a1.7 1.7 0 0 0 1.1.4h.04a2 2 0 1 1 0 4h-.04a1.7 1.7 0 0 0-1.1.4 1.7 1.7 0 0 0-.6 1Z"/>
+          </svg>
+        </button>
       </div>
-      <label class="flex items-center gap-3 text-xs text-slate-500">
-        <input class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600/20" id="chat-grounding" name="ground" type="checkbox" checked />
-        Ground answers in your knowledge base (RAG)
-      </label>
       <textarea
         class="w-full resize-none rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20"
         id="chat-input"
@@ -96,7 +67,7 @@
     <p class="mt-4 hidden rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700" id="chat-error"></p>
   </section>
 
-  <aside class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+  <aside class="min-w-0 rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
     <div class="flex items-center justify-between">
       <h2 class="text-lg font-semibold">References</h2>
       <span class="rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-600">Live</span>
@@ -111,36 +82,146 @@
   </aside>
 </div>
 
+<dialog id="chat-settings-modal" class="w-[92vw] max-w-4xl rounded-2xl border border-gray-200 bg-white p-0 shadow-xl">
+  <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+    <h3 class="text-sm font-semibold text-slate-700">Chat settings</h3>
+    <button class="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700" id="chat-settings-close" type="button" aria-label="Close settings">
+      <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 6-12 12"/><path d="m6 6 12 12"/></svg>
+    </button>
+  </div>
+  <div class="p-5">
+    <div class="grid gap-4 md:grid-cols-4">
+      <div>
+        <label class="text-xs uppercase tracking-wide text-slate-400">Inference</label>
+        <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-inference">
+          <option value="">Default (profile)</option>
+          {% for config in inference_configs %}
+            <option value="{{ config.id }}">
+              {{ config.name }}{% if config.base_url %} ({{ config.base_url }}){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="text-xs uppercase tracking-wide text-slate-400">Model</label>
+        <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model">
+          <option value="">Default (settings)</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs uppercase tracking-wide text-slate-400">Creativity</label>
+        <input class="mt-3 w-full" id="chat-temperature" type="range" min="0" max="4" step="1" value="1" />
+        <p class="mt-2 text-xs text-slate-500" id="chat-temperature-label">Focused</p>
+      </div>
+      <div>
+        <label class="text-xs uppercase tracking-wide text-slate-400">Max tokens</label>
+        <input class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-max-tokens" type="number" min="64" max="4000" step="64" value="832" />
+      </div>
+    </div>
+  </div>
+</dialog>
+
 <style>
-  .chat-markdown h1, .chat-markdown h2, .chat-markdown h3 { margin: 0.6rem 0 0.4rem; font-weight: 600; }
-  .chat-markdown p { margin: 0.4rem 0; }
-  .chat-markdown ul, .chat-markdown ol { margin: 0.4rem 0 0.4rem 1.25rem; }
-  .chat-markdown li { margin: 0.2rem 0; }
-  .chat-markdown code { background: #f1f5f9; padding: 0 0.25rem; border-radius: 4px; }
-  .chat-markdown pre { background: #0f172a; color: #e2e8f0; padding: 0.75rem; border-radius: 10px; overflow: auto; }
-  .chat-markdown pre code { background: transparent; padding: 0; }
-  .chat-markdown table { border-collapse: collapse; margin: 0.6rem 0; width: 100%; }
-  .chat-markdown th, .chat-markdown td { border: 1px solid #e2e8f0; padding: 6px 8px; }
-  .chat-markdown blockquote { border-left: 3px solid #e2e8f0; padding-left: 10px; color: #64748b; margin: 0.4rem 0; }
-  .chat-markdown hr { border: none; border-top: 1px solid #e2e8f0; margin: 0.6rem 0; }
-  .ref-excerpt {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+  .chat-markdown {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.55;
+  }
+  .chat-markdown pre,
+  .chat-markdown table {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .chat-markdown pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    margin: 0.65rem 0;
+    white-space: pre;
+  }
+  .chat-markdown pre code {
+    display: block;
+    white-space: pre;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+  .chat-markdown pre code.hljs {
+    display: block;
+    background: transparent;
+    color: inherit;
+    border-radius: 0.5rem;
+    padding: 0;
+  }
+  .chat-markdown :not(pre) > code {
+    background: #e2e8f0;
+    color: #0f172a;
+    padding: 0.1rem 0.3rem;
+    border-radius: 0.3rem;
+  }
+  .citation-link {
+    color: #2563eb;
+    text-decoration: underline;
+    white-space: nowrap;
+  }
+  #chat-thread,
+  #chat-refs,
+  #chat-context {
+    min-width: 0;
   }
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
 <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/markdown-it-emoji@3.0.0/dist/markdown-it-emoji.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/markdown-it-task-lists@2.1.1/dist/markdown-it-task-lists.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/highlight.min.js"></script>
 <script>
+  function escapeHtml(raw) {
+    return String(raw)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function highlightCode(code, lang) {
+    const source = String(code || '');
+    if (window.hljs) {
+      try {
+        if (lang && window.hljs.getLanguage(lang)) {
+          const highlighted = window.hljs.highlight(source, {
+            language: lang,
+            ignoreIllegals: true,
+          }).value;
+          return `<pre><code class="hljs language-${lang}">${highlighted}</code></pre>`;
+        }
+        const auto = window.hljs.highlightAuto(source);
+        const langClass = auto.language ? ` language-${auto.language}` : '';
+        return `<pre><code class="hljs${langClass}">${auto.value}</code></pre>`;
+      } catch {}
+    }
+    return `<pre><code>${escapeHtml(source)}</code></pre>`;
+  }
+
   const md = window.markdownit({
     html: false,
     linkify: true,
     breaks: true,
-    typographer: true
-  }).use(window.markdownitEmoji).use(window.markdownitTaskLists, { enabled: true });
+    typographer: true,
+    highlight: highlightCode,
+  });
+  if (window.markdownitEmoji) {
+    md.use(window.markdownitEmoji);
+  }
+  if (window.markdownitTaskLists) {
+    md.use(window.markdownitTaskLists, { enabled: true });
+  }
+
   const form = document.getElementById('chat-form');
   const input = document.getElementById('chat-input');
   const thread = document.getElementById('chat-thread');
@@ -155,12 +236,22 @@
   const groundingToggle = document.getElementById('chat-grounding');
   const tokenCountLabel = document.getElementById('chat-token-count');
   const inferenceIdInput = document.getElementById('chat-inference-id');
+  const settingsOpenButton = document.getElementById('chat-settings-open');
+  const settingsCloseButton = document.getElementById('chat-settings-close');
+  const settingsModal = document.getElementById('chat-settings-modal');
+  const kbSwitchWrap = document.getElementById('kb-switch-wrap');
+  const kbSwitch = document.getElementById('kb-switch');
   const kbSelector = document.getElementById('kb-selector');
-  const kbScope = document.getElementById('kb-scope');
   const chatScope = document.getElementById('chat-scope');
   const chatGroupId = document.getElementById('chat-group-id');
-  let refsByIndex = {};
-  let lastAnswerContent = null;
+  const submitButton = form ? form.querySelector('button[type="submit"]') : null;
+  const state = {
+    refsByIndex: {},
+    lastAnswerContent: null,
+    queuedRender: null,
+    pendingRender: null,
+  };
+
   const TEMPERATURE_PRESETS = [
     { label: 'Very focused', value: 0.0 },
     { label: 'Focused', value: 0.2 },
@@ -178,14 +269,342 @@
   ];
   const FALLBACK_MODEL_LIMIT = 12;
 
+  function safeJsonParse(raw, fallback = null) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  }
+
+  function decodeBase64Utf8(raw) {
+    try {
+      const binary = atob(raw);
+      const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch {
+      return '';
+    }
+  }
+
+  function addBubble(text, role) {
+    const bubble = document.createElement('div');
+    bubble.className = `max-w-[75%] rounded-lg px-4 py-3 text-[12.5px] leading-relaxed shadow-sm ${
+      role === 'user'
+        ? 'ml-auto bg-slate-900 text-white'
+        : 'border border-gray-200 bg-white text-slate-700'
+    }`;
+    const content = document.createElement('div');
+    content.className = role === 'user' ? '' : 'chat-markdown';
+    content.textContent = text;
+    bubble.appendChild(content);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mt-4 flex';
+    if (role === 'user') wrapper.classList.add('justify-end');
+    wrapper.appendChild(bubble);
+    thread.appendChild(wrapper);
+    thread.scrollTop = thread.scrollHeight;
+    return bubble;
+  }
+
+  function setError(message) {
+    if (!errorBox) return;
+    if (!message) {
+      errorBox.classList.add('hidden');
+      errorBox.textContent = '';
+      return;
+    }
+    errorBox.classList.remove('hidden');
+    errorBox.textContent = message;
+  }
+
+  function updateRefs(refs) {
+    if (!refsList) return;
+    refsList.innerHTML = '';
+    state.refsByIndex = {};
+    if (!Array.isArray(refs) || refs.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-slate-400';
+      li.textContent = 'No references yet.';
+      refsList.appendChild(li);
+      return;
+    }
+
+    refs.forEach((ref) => {
+      const refIndex = Number(ref.index);
+      if (!Number.isFinite(refIndex) || refIndex <= 0) return;
+      state.refsByIndex[refIndex] = ref;
+
+      const li = document.createElement('li');
+      li.id = `ref-${refIndex}`;
+
+      const link = document.createElement('a');
+      link.className = 'block rounded-lg border border-gray-200 bg-white px-4 py-3 transition hover:border-blue-100 hover:text-blue-600';
+      link.href = `/articles/${ref.id}`;
+      link.textContent = `[${refIndex}] ${ref.title || 'Untitled'}`;
+
+      const excerpt = document.createElement('p');
+      excerpt.className = 'mt-2 text-xs text-slate-500';
+      excerpt.textContent = ref.summary || ref.excerpt || '';
+      link.appendChild(excerpt);
+
+      li.appendChild(link);
+      refsList.appendChild(li);
+    });
+
+    if (state.lastAnswerContent) {
+      linkifyCitations(state.lastAnswerContent);
+    }
+  }
+
+  function linkifyCitations(container) {
+    if (!container) return;
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !/\[(\d+)\]?/.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        const parent = node.parentElement;
+        if (parent && parent.closest('pre, code, a')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+    textNodes.forEach((node) => {
+      const text = node.nodeValue || '';
+      const re = /\[(\d+)\]?/g;
+      let cursor = 0;
+      let match = null;
+      let changed = false;
+      const frag = document.createDocumentFragment();
+
+      while ((match = re.exec(text)) !== null) {
+        const start = match.index;
+        const end = re.lastIndex;
+        const index = Number(match[1]);
+        const ref = state.refsByIndex[index];
+        const normalized = `[${index}]`;
+
+        if (start > cursor) {
+          frag.appendChild(document.createTextNode(text.slice(cursor, start)));
+        }
+
+        if (ref) {
+          const a = document.createElement('a');
+          a.className = 'citation-link';
+          a.href = `/articles/${ref.id}#ref-${index}`;
+          a.textContent = normalized;
+          frag.appendChild(a);
+          changed = true;
+        } else {
+          frag.appendChild(document.createTextNode(normalized));
+          if (match[0] !== normalized) changed = true;
+        }
+
+        cursor = end;
+      }
+
+      if (!changed) return;
+      if (cursor < text.length) {
+        frag.appendChild(document.createTextNode(text.slice(cursor)));
+      }
+      node.parentNode.replaceChild(frag, node);
+    });
+  }
+
+  function looksLikeCommandLine(line) {
+    const trimmed = (line || '').trim();
+    if (!trimmed) return false;
+    if (/^#{1,6}\s/.test(trimmed)) return false;
+    if (/^[-*+]\s/.test(trimmed)) return false;
+    if (/^\d+\.\s/.test(trimmed)) return false;
+    if (/[.!?]$/.test(trimmed)) return false;
+    if (/^`{1,3}/.test(trimmed)) return false;
+
+    const match = trimmed.match(/^([A-Za-z0-9_.-]+)(.*)$/);
+    if (!match) return false;
+    const cmd = (match[1] || '').toLowerCase();
+    const rest = (match[2] || '').trim();
+    if (!rest) return false;
+
+    const known = new Set([
+      'curl', 'wget', 'fn', 'oci', 'python', 'python3', 'pip', 'pip3', 'uv', 'poetry',
+      'npm', 'yarn', 'pnpm', 'node', 'npx', 'docker', 'kubectl', 'helm', 'terraform',
+      'git', 'go', 'java', 'javac', 'mvn', 'gradle', 'cargo', 'rustc', 'bash', 'sh', 'zsh',
+      'pwsh', 'powershell', 'brew', 'apt', 'apt-get', 'yum'
+    ]);
+    if (!known.has(cmd)) return false;
+
+    if (/:$/.test(trimmed)) return false;
+    if (/^[A-Z][A-Za-z]+:$/.test(rest)) return false;
+    if (/\bhttps?:\/\//.test(rest)) return true;
+    if (/[<>{}|/$\\]/.test(rest)) return true;
+    if (/\s--?[A-Za-z0-9]/.test(rest)) return true;
+    if (/\b[a-z0-9_.-]+\.[a-z]{2,}\b/i.test(rest)) return true;
+    if (/^[a-z0-9_./-]+(?:\s+[a-z0-9_./<>{}-]+)+$/i.test(rest) && !/[A-Z]/.test(rest)) return true;
+    return false;
+  }
+
+  function autoFenceCommandBlocks(text) {
+    const lines = String(text || '').split('\n');
+    const out = [];
+    let inFence = false;
+    let inCommandFence = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (/^```/.test(trimmed)) {
+        if (inCommandFence) {
+          out.push('```');
+          inCommandFence = false;
+        }
+        inFence = !inFence;
+        out.push(line);
+        continue;
+      }
+
+      if (inFence) {
+        out.push(line);
+        continue;
+      }
+
+      if (inCommandFence) {
+        if (!trimmed) {
+          out.push('```');
+          inCommandFence = false;
+          out.push(line);
+          continue;
+        }
+        if (
+          looksLikeCommandLine(trimmed) ||
+          /^[|&\\]/.test(trimmed) ||
+          /^--?[A-Za-z0-9]/.test(trimmed)
+        ) {
+          out.push(line);
+          continue;
+        }
+        out.push('```');
+        inCommandFence = false;
+      }
+
+      if (looksLikeCommandLine(trimmed)) {
+        out.push('```bash');
+        out.push(line);
+        inCommandFence = true;
+        continue;
+      }
+
+      out.push(line);
+    }
+
+    if (inCommandFence) {
+      out.push('```');
+    }
+
+    return out.join('\n');
+  }
+
+  function normalizeMarkdown(raw, options = {}) {
+    if (!raw) return '';
+    const streaming = Boolean(options.streaming);
+    let text = String(raw).replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
+    text = text.replace(/[ \t]+\n/g, '\n');
+
+    // Ensure markdown block tokens start cleanly when the model glues sentences.
+    text = text.replace(/([^\n])\s+(#{1,6}\s)/g, '$1\n\n$2');
+    text = text.replace(/([.:!?])\s+(\d+\.\s)/g, '$1\n$2');
+    text = text.replace(/([.:!?])\s+([-*+]\s)/g, '$1\n$2');
+    text = text.replace(/([^\n])(```)/g, '$1\n$2');
+
+    // Normalize malformed citations emitted by some models.
+    text = text.replace(/\[(\d+)(?!\])/g, '[$1]');
+    text = text.replace(/\](?=\[\d+\])/g, '] ');
+    text = autoFenceCommandBlocks(text);
+
+    const fenceCount = (text.match(/```/g) || []).length;
+    if (streaming && fenceCount % 2 === 1) {
+      text += '\n```';
+    }
+
+    text = text.replace(/\n{3,}/g, '\n\n');
+    return text.trim();
+  }
+
+  function renderAssistantMarkdown(target, markdownText, options = {}) {
+    if (!target) return;
+    const normalized = normalizeMarkdown(markdownText, options);
+    const rendered = md.render(normalized || '');
+    target.innerHTML = window.DOMPurify ? window.DOMPurify.sanitize(rendered) : rendered;
+    if (options.linkify !== false) {
+      linkifyCitations(target);
+    }
+  }
+
+  function queueRender(target, markdownText, options = {}) {
+    state.pendingRender = { target, markdownText, options };
+    if (state.queuedRender) return;
+    state.queuedRender = window.setTimeout(() => {
+      state.queuedRender = null;
+      if (!state.pendingRender) return;
+      const next = state.pendingRender;
+      state.pendingRender = null;
+      renderAssistantMarkdown(next.target, next.markdownText, next.options);
+    }, 80);
+  }
+
+  function parseSseBlock(block) {
+    let eventName = 'message';
+    const dataLines = [];
+    const lines = block.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).replace(/^\s/, ''));
+      }
+    }
+    return { eventName, data: dataLines.join('\n') };
+  }
+
+  function updateTemperatureLabel() {
+    if (!temperatureInput || !temperatureLabel) return;
+    const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
+    const preset = TEMPERATURE_PRESETS[index];
+    if (preset) temperatureLabel.textContent = preset.label;
+  }
+
+  function getSelectedTemperature() {
+    if (!temperatureInput) return 0.2;
+    const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
+    const preset = TEMPERATURE_PRESETS[index];
+    return preset ? preset.value : 0.2;
+  }
+
+  function normalizeTokenInput() {
+    if (!maxTokensInput) return null;
+    const raw = Number(maxTokensInput.value);
+    if (!Number.isFinite(raw)) return null;
+    const min = Number(maxTokensInput.min) || 0;
+    const max = Number(maxTokensInput.max) || raw;
+    const step = Number(maxTokensInput.step) || 1;
+    const clamped = Math.min(max, Math.max(min, raw));
+    const snapped = min + Math.round((clamped - min) / step) * step;
+    maxTokensInput.value = String(snapped);
+    return snapped;
+  }
+
   async function loadModels() {
+    if (!modelSelect) return;
     const cached = sessionStorage.getItem('openrouterModels');
     if (cached) {
-      try {
-        const models = JSON.parse(cached);
+      const models = safeJsonParse(cached);
+      if (Array.isArray(models)) {
         populateModels(models);
         return;
-      } catch {}
+      }
     }
     try {
       const res = await fetch('/api/openrouter/models');
@@ -198,157 +617,47 @@
   }
 
   function populateModels(models) {
+    if (!modelSelect) return;
+    modelSelect.innerHTML = '<option value="">Default (settings)</option>';
     const curated = [];
     const seen = new Set();
-    MODEL_FAMILIES.forEach(family => {
-      const matches = models.filter(model =>
-        !seen.has(model) && family.patterns.some(pattern => pattern.test(model))
+
+    MODEL_FAMILIES.forEach((family) => {
+      const matches = models.filter((model) =>
+        !seen.has(model) && family.patterns.some((pattern) => pattern.test(model))
       );
       if (matches.length === 0) return;
-      const selected = matches.slice(-family.limit);
-      selected.forEach(model => {
+      matches.slice(-family.limit).forEach((model) => {
         seen.add(model);
         curated.push({ id: model, label: `${family.label} (${model})` });
       });
     });
+
     const modelsToShow = curated.length
       ? curated
-      : models.slice(0, FALLBACK_MODEL_LIMIT).map(model => ({ id: model, label: model }));
-    modelsToShow.forEach(model => {
+      : models.slice(0, FALLBACK_MODEL_LIMIT).map((model) => ({ id: model, label: model }));
+
+    modelsToShow.forEach((model) => {
       const opt = document.createElement('option');
       opt.value = model.id;
       opt.textContent = model.label;
       modelSelect.appendChild(opt);
     });
+
     if (!modelSelect.value && modelsToShow.length > 0) {
       modelSelect.value = modelsToShow[0].id;
     }
   }
 
-  function addBubble(text, role) {
-    const bubble = document.createElement('div');
-    bubble.className = `max-w-[75%] rounded-lg px-4 py-3 text-sm leading-relaxed shadow-sm ${
-      role === 'user'
-        ? 'ml-auto bg-slate-900 text-white'
-        : 'border border-gray-200 bg-white text-slate-700'
-    }`;
-    const content = document.createElement('div');
-    content.className = role === 'user' ? '' : 'chat-markdown';
-    content.textContent = text;
-    bubble.appendChild(content);
-    const wrapper = document.createElement('div');
-    wrapper.className = 'mt-4 flex';
-    if (role === 'user') {
-      wrapper.classList.add('justify-end');
-    }
-    wrapper.appendChild(bubble);
-    thread.appendChild(wrapper);
-    thread.scrollTop = thread.scrollHeight;
-    return bubble;
-  }
-
-  function setError(message) {
-    if (!message) {
-      errorBox.classList.add('hidden');
-      errorBox.textContent = '';
-      return;
-    }
-    errorBox.classList.remove('hidden');
-    errorBox.textContent = message;
-  }
-
-  function updateRefs(refs) {
-    refsList.innerHTML = '';
-    refsByIndex = {};
-    if (!refs || refs.length === 0) {
-      const li = document.createElement('li');
-      li.className = 'rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-3 text-slate-400';
-      li.textContent = 'No references yet.';
-      refsList.appendChild(li);
-      return;
-    }
-    refs.forEach(ref => {
-      const refIndex = Number(ref.index);
-      if (!Number.isNaN(refIndex) && refIndex > 0) {
-        refsByIndex[refIndex] = ref;
-      }
-      const li = document.createElement('li');
-      li.id = `ref-${refIndex}`;
-      const link = document.createElement('a');
-      link.className = 'block rounded-lg border border-gray-200 bg-white px-4 py-3 transition hover:border-blue-100 hover:text-blue-600';
-      link.href = `/articles/${ref.id}`;
-      link.textContent = `[${refIndex}] ${ref.title}`;
-      const excerpt = document.createElement('p');
-      excerpt.className = 'ref-excerpt mt-2 text-xs text-slate-500';
-      excerpt.textContent = ref.summary || ref.excerpt || '';
-      excerpt.dataset.summary = ref.summary || ref.excerpt || '';
-      excerpt.dataset.full = ref.excerpt || ref.summary || '';
-      excerpt.addEventListener('mouseenter', () => {
-        excerpt.textContent = excerpt.dataset.full || excerpt.textContent;
-        excerpt.style.webkitLineClamp = 'unset';
-        excerpt.style.overflow = 'visible';
-      });
-      excerpt.addEventListener('mouseleave', () => {
-        excerpt.textContent = excerpt.dataset.summary || excerpt.textContent;
-        excerpt.style.webkitLineClamp = '2';
-        excerpt.style.overflow = 'hidden';
-      });
-      link.appendChild(excerpt);
-      li.appendChild(link);
-      refsList.appendChild(li);
-    });
-    if (lastAnswerContent) {
-      linkifyCitations(lastAnswerContent);
-    }
-  }
-
-  function linkifyCitations(container) {
-    if (!container) return;
-    const html = container.innerHTML;
-    const linked = html.replace(/\[(\d+)\]/g, (match, index) => {
-      const refIndex = Number(index);
-      const ref = refsByIndex[refIndex];
-      if (!ref) return match;
-      return `<sup><a class="text-blue-600 hover:text-blue-700" href="/articles/${ref.id}#ref-${refIndex}">[${refIndex}]</a></sup>`;
-    });
-    container.innerHTML = linked;
-  }
-
-  function updateTemperatureLabel() {
-    const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
-    const preset = TEMPERATURE_PRESETS[index];
-    if (preset) {
-      temperatureLabel.textContent = preset.label;
-    }
-  }
-
-  function getSelectedTemperature() {
-    const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
-    const preset = TEMPERATURE_PRESETS[index];
-    return preset ? preset.value : 0.2;
-  }
-
-  function normalizeTokenInput() {
-    const raw = Number(maxTokensInput.value);
-    if (!Number.isFinite(raw)) return null;
-    const min = Number(maxTokensInput.min) || 0;
-    const max = Number(maxTokensInput.max) || raw;
-    const step = Number(maxTokensInput.step) || 1;
-    const clamped = Math.min(max, Math.max(min, raw));
-    const snapped = min + Math.round((clamped - min) / step) * step;
-    maxTokensInput.value = String(snapped);
-    return snapped;
-  }
-
   async function streamAnswer(question) {
     setError('');
-    if (tokenCountLabel) {
-      tokenCountLabel.textContent = 'Tokens: 0';
-    }
-    const userBubble = addBubble(question, 'user');
+    if (tokenCountLabel) tokenCountLabel.textContent = 'Tokens: 0';
+
+    addBubble(question, 'user');
     const answerBubble = addBubble('', 'assistant');
     const answerContent = answerBubble.querySelector('div');
-    lastAnswerContent = answerContent;
+    state.lastAnswerContent = answerContent;
+    let answerText = '';
     const maxTokens = normalizeTokenInput();
 
     const response = await fetch('/chat/stream', {
@@ -356,11 +665,11 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         question,
-        model: modelSelect.value || null,
+        model: modelSelect ? modelSelect.value || null : null,
         provider: null,
         temperature: getSelectedTemperature(),
         max_tokens: maxTokens,
-        ground: groundingToggle.checked,
+        ground: groundingToggle ? groundingToggle.checked : true,
         inference_id: inferenceSelect ? inferenceSelect.value : null,
         scope: chatScope ? chatScope.value : null,
         group_id: chatGroupId ? chatGroupId.value : null
@@ -369,103 +678,113 @@
 
     if (!response.ok) {
       const errorText = await response.text();
-      setError(errorText);
+      setError(errorText || 'Request failed');
+      answerBubble.remove();
+      return;
+    }
+    if (!response.body) {
+      setError('Streaming is not available in this browser.');
       answerBubble.remove();
       return;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-    let answerText = '';
+    let sseBuffer = '';
+    let streamDone = false;
 
-    while (true) {
+    while (!streamDone) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\\n\\n');
-      buffer = parts.pop();
-      for (const part of parts) {
-        const lines = part.split('\\n');
-        let event = 'message';
-        let data = '';
-        for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            event = line.slice(7).trim();
-          } else if (line.startsWith('data: ')) {
-            data += line.slice(6);
-          }
-        }
+      sseBuffer += decoder.decode(value, { stream: true });
 
-        if (event === 'refs') {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed && parsed.b64) {
-              const decoded = atob(parsed.b64);
-              updateRefs(JSON.parse(decoded));
-            } else {
-              updateRefs(parsed);
-            }
-          } catch {}
-        } else if (event === 'context') {
-          const payload = (data || '').trim();
-          if (!payload) {
-            contextBox.textContent = 'No context.';
+      let splitIndex = sseBuffer.indexOf('\n\n');
+      while (splitIndex !== -1) {
+        const block = sseBuffer.slice(0, splitIndex);
+        sseBuffer = sseBuffer.slice(splitIndex + 2);
+        splitIndex = sseBuffer.indexOf('\n\n');
+        if (!block.trim()) continue;
+
+        const { eventName, data } = parseSseBlock(block);
+        if (eventName === 'answer') {
+          const token = safeJsonParse(data, data);
+          answerText += typeof token === 'string' ? token : String(token || '');
+          queueRender(answerContent, answerText, { streaming: true, linkify: false });
+          continue;
+        }
+        if (eventName === 'usage') {
+          const usage = safeJsonParse(data, null);
+          if (usage && tokenCountLabel && typeof usage.total_tokens !== 'undefined') {
+            tokenCountLabel.textContent = `Tokens: ${usage.total_tokens}`;
+          }
+          continue;
+        }
+        if (eventName === 'refs') {
+          const payload = safeJsonParse(data, null);
+          if (payload && payload.b64) {
+            const decoded = decodeBase64Utf8(payload.b64);
+            updateRefs(safeJsonParse(decoded, []));
           } else {
-            try {
-              const parsed = JSON.parse(payload);
-              if (parsed && parsed.b64) {
-                const decoded = atob(parsed.b64);
-                contextBox.textContent = decoded || 'No context.';
-              } else {
-                contextBox.textContent = JSON.stringify(parsed, null, 2);
-              }
-            } catch {
-              contextBox.textContent = payload;
-            }
+            updateRefs(payload);
           }
-        } else if (event === 'error') {
-          try {
-            setError(JSON.parse(data));
-          } catch {
-            setError(data);
+          continue;
+        }
+        if (eventName === 'context') {
+          if (!contextBox) continue;
+          const payload = safeJsonParse(data, null);
+          if (!payload) {
+            contextBox.textContent = data || 'No context.';
+            continue;
           }
-        } else if (event === 'answer') {
-          try {
-            const token = JSON.parse(data);
-            answerText += token;
-            if (window.DOMPurify) {
-              const normalized = answerText
-                .replace(/([^\n])\s*(#{1,6}\s)/g, '$1\n\n$2')
-                .replace(/([^\n])\s*(\d+\.\s)/g, '$1\n$2')
-                .replace(/([^\n])\s*([*-]\s)/g, '$1\n$2');
-              answerContent.innerHTML = DOMPurify.sanitize(md.render(normalized));
-              linkifyCitations(answerContent);
-            } else {
-              answerContent.textContent = answerText;
-            }
-          } catch {}
-        } else if (event === 'usage') {
-          try {
-            const usage = JSON.parse(data);
-            if (tokenCountLabel && usage && typeof usage.total_tokens !== 'undefined') {
-              tokenCountLabel.textContent = `Tokens: ${usage.total_tokens}`;
-            }
-          } catch {}
-        } else if (event === 'done') {
-          return;
+          if (payload.b64) {
+            contextBox.textContent = decodeBase64Utf8(payload.b64) || 'No context.';
+          } else {
+            contextBox.textContent = JSON.stringify(payload, null, 2);
+          }
+          continue;
+        }
+        if (eventName === 'error') {
+          const message = safeJsonParse(data, data);
+          setError(typeof message === 'string' ? message : 'Unknown chat error');
+          continue;
+        }
+        if (eventName === 'done') {
+          streamDone = true;
         }
       }
     }
+
+    if (state.queuedRender) {
+      clearTimeout(state.queuedRender);
+      state.queuedRender = null;
+    }
+    state.pendingRender = null;
+    renderAssistantMarkdown(answerContent, answerText, { streaming: false });
   }
 
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const question = input.value.trim();
-    if (!question) return;
-    input.value = '';
-    await streamAnswer(question);
-  });
+  function updateGroundingUI() {
+    const grounded = groundingToggle ? groundingToggle.checked : true;
+    if (kbSwitchWrap) kbSwitchWrap.classList.toggle('opacity-50', !grounded);
+    if (kbSwitch) kbSwitch.classList.toggle('hidden', !grounded);
+    if (kbSelector) kbSelector.disabled = !grounded;
+  }
+
+  if (form && input && thread) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+      input.value = '';
+      if (submitButton) submitButton.disabled = true;
+      try {
+        await streamAnswer(question);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (submitButton) submitButton.disabled = false;
+      }
+    });
+  }
 
   if (inferenceSelect && inferenceIdInput) {
     inferenceSelect.addEventListener('change', () => {
@@ -473,24 +792,41 @@
     });
   }
 
-  if (kbSelector && kbScope && chatScope && chatGroupId) {
+  if (settingsOpenButton && settingsModal) {
+    settingsOpenButton.addEventListener('click', () => settingsModal.showModal());
+  }
+  if (settingsCloseButton && settingsModal) {
+    settingsCloseButton.addEventListener('click', () => settingsModal.close());
+  }
+
+  if (groundingToggle) {
+    groundingToggle.addEventListener('change', updateGroundingUI);
+    updateGroundingUI();
+  }
+
+  if (kbSelector && chatScope && chatGroupId) {
     kbSelector.addEventListener('change', () => {
+      const url = new URL(window.location.href);
       if (!kbSelector.value) {
-        kbScope.value = 'personal';
         chatScope.value = 'personal';
         chatGroupId.value = '';
+        url.searchParams.set('scope', 'personal');
+        url.searchParams.delete('group_id');
       } else {
-        kbScope.value = 'group';
         chatScope.value = 'group';
         chatGroupId.value = kbSelector.value;
+        url.searchParams.set('scope', 'group');
+        url.searchParams.set('group_id', kbSelector.value);
       }
-      document.getElementById('kb-switch').submit();
+      window.location.href = url.toString();
     });
   }
 
-  temperatureInput.addEventListener('input', updateTemperatureLabel);
-  maxTokensInput.addEventListener('change', normalizeTokenInput);
-  maxTokensInput.addEventListener('blur', normalizeTokenInput);
+  if (temperatureInput) temperatureInput.addEventListener('input', updateTemperatureLabel);
+  if (maxTokensInput) {
+    maxTokensInput.addEventListener('change', normalizeTokenInput);
+    maxTokensInput.addEventListener('blur', normalizeTokenInput);
+  }
   updateTemperatureLabel();
   loadModels();
 </script>

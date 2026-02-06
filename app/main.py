@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import CATEGORIES
-from app.db import get_db
+from app.db import engine, get_db
 from app.models import (
     Article,
     ArticleVersion,
@@ -95,6 +95,38 @@ def render_markdown_text(text: Optional[str]) -> str:
 
 
 templates.env.filters["markdown_text"] = render_markdown_text
+
+
+@app.on_event("startup")
+def ensure_ingest_dedupe_schema() -> None:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS external_dedupe_key text"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_articles_external_dedupe_key "
+                "ON articles(external_dedupe_key)"
+            )
+        )
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_articles_owner_dedupe_null_group "
+                    "ON articles(owner_id, external_dedupe_key) "
+                    "WHERE group_id IS NULL AND external_dedupe_key IS NOT NULL"
+                )
+            )
+        except Exception as exc:
+            logger.warning("Could not create private-scope dedupe index: %s", exc)
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_articles_owner_group_dedupe "
+                    "ON articles(owner_id, group_id, external_dedupe_key) "
+                    "WHERE group_id IS NOT NULL AND external_dedupe_key IS NOT NULL"
+                )
+            )
+        except Exception as exc:
+            logger.warning("Could not create group-scope dedupe index: %s", exc)
 
 
 def format_dt(value: Any) -> str:
@@ -1153,6 +1185,32 @@ def insights_ui(
             query_embedding = embed_query(query)
         except RuntimeError as exc:
             error = str(exc)
+            like_query = f"%{query.strip()}%"
+            fallback_query = db.query(Article).filter(article_scope_filter).filter(
+                or_(
+                    Article.title.ilike(like_query),
+                    Article.summary.ilike(like_query),
+                    Article.content_text.ilike(like_query),
+                )
+            )
+            if selected_category != "all":
+                fallback_query = fallback_query.filter(
+                    or_(
+                        Article.metadata_["category"].astext == selected_category,
+                        Article.metadata_["categories"].contains([selected_category]),
+                    )
+                )
+            fallback_articles = fallback_query.order_by(Article.updated_at.desc()).limit(20).all()
+            results = [
+                {
+                    "article": article,
+                    "snippet": (article.summary or article.content_text or "")[:240],
+                    "similarity": None,
+                    "semantic_score": None,
+                    "lexical_score": None,
+                }
+                for article in fallback_articles
+            ]
         else:
             terms = _keyword_terms(query)
             distance = Chunk.embedding.cosine_distance(query_embedding).label("distance")
@@ -1198,6 +1256,35 @@ def insights_ui(
                         "lexical_score": lexical,
                     }
             results = sorted(scored.values(), key=lambda item: item["similarity"], reverse=True)[:20]
+
+            # Fallback when vector search has no chunks for otherwise relevant articles.
+            if not results:
+                like_query = f"%{query.strip()}%"
+                fallback_query = db.query(Article).filter(article_scope_filter).filter(
+                    or_(
+                        Article.title.ilike(like_query),
+                        Article.summary.ilike(like_query),
+                        Article.content_text.ilike(like_query),
+                    )
+                )
+                if selected_category != "all":
+                    fallback_query = fallback_query.filter(
+                        or_(
+                            Article.metadata_["category"].astext == selected_category,
+                            Article.metadata_["categories"].contains([selected_category]),
+                        )
+                    )
+                fallback_articles = fallback_query.order_by(Article.updated_at.desc()).limit(20).all()
+                results = [
+                    {
+                        "article": article,
+                        "snippet": (article.summary or article.content_text or "")[:240],
+                        "similarity": None,
+                        "semantic_score": None,
+                        "lexical_score": None,
+                    }
+                    for article in fallback_articles
+                ]
     else:
         list_query = db.query(Article).filter(article_scope_filter)
         if selected_category != "all":
@@ -1560,12 +1647,12 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     if stats_answer:
         async def event_stream():
             context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
-            yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+            yield f"event: context\ndata: {json.dumps({'b64': context_b64})}\n\n"
             refs_b64 = base64.b64encode(json.dumps([]).encode("utf-8")).decode("utf-8")
-            yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
-            yield f"event: answer\\ndata: {json.dumps(stats_answer)}\\n\\n"
-            yield f"event: usage\\ndata: {json.dumps({'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})}\\n\\n"
-            yield "event: done\\ndata: {}\\n\\n"
+            yield f"event: refs\ndata: {json.dumps({'b64': refs_b64})}\n\n"
+            yield f"event: answer\ndata: {json.dumps(stats_answer)}\n\n"
+            yield f"event: usage\ndata: {json.dumps({'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})}\n\n"
+            yield "event: done\ndata: {}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1576,9 +1663,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     if not ground:
         async def event_stream():
             context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
-            yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+            yield f"event: context\ndata: {json.dumps({'b64': context_b64})}\n\n"
             refs_b64 = base64.b64encode(json.dumps([]).encode("utf-8")).decode("utf-8")
-            yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
+            yield f"event: refs\ndata: {json.dumps({'b64': refs_b64})}\n\n"
             answer_parts: list[str] = []
             try:
                 for token in stream_answer_freely(
@@ -1591,10 +1678,10 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
                     inference=inference,
                 ):
                     answer_parts.append(token)
-                    yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+                    yield f"event: answer\ndata: {json.dumps(token)}\n\n"
             except Exception as exc:
-                yield f"event: error\\ndata: {json.dumps(str(exc))}\\n\\n"
-                yield "event: done\\ndata: {}\\n\\n"
+                yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"
+                yield "event: done\ndata: {}\n\n"
                 return
 
             answer_text = "".join(answer_parts).strip()
@@ -1604,7 +1691,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
                 answer_text,
                 model or settings.llm_model,
             )
-            yield f"event: usage\\ndata: {json.dumps(usage)}\\n\\n"
+            yield f"event: usage\ndata: {json.dumps(usage)}\n\n"
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": answer_text})
             CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
@@ -1698,9 +1785,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
 
     async def event_stream():
         context_b64 = base64.b64encode(context.encode("utf-8")).decode("utf-8")
-        yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+        yield f"event: context\ndata: {json.dumps({'b64': context_b64})}\n\n"
         refs_b64 = base64.b64encode(json.dumps(references).encode("utf-8")).decode("utf-8")
-        yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
+        yield f"event: refs\ndata: {json.dumps({'b64': refs_b64})}\n\n"
         answer_parts: list[str] = []
         try:
             for token in stream_answer_with_context(
@@ -1714,10 +1801,10 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
                 inference=inference,
             ):
                 answer_parts.append(token)
-                yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+                yield f"event: answer\ndata: {json.dumps(token)}\n\n"
         except Exception as exc:
-            yield f"event: error\\ndata: {json.dumps(str(exc))}\\n\\n"
-            yield "event: done\\ndata: {}\\n\\n"
+            yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"
+            yield "event: done\ndata: {}\n\n"
             return
 
         answer_text = "".join(answer_parts).strip()
@@ -1728,7 +1815,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
             answer_text,
             model or settings.llm_model,
         )
-        yield f"event: usage\\ndata: {json.dumps(usage)}\\n\\n"
+        yield f"event: usage\ndata: {json.dumps(usage)}\n\n"
         history.append({"role": "user", "content": question})
         history.append({"role": "assistant", "content": answer_text})
         CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]

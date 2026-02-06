@@ -93,6 +93,50 @@ def send_magic_link(recipient: str, magic_link: str) -> None:
     _send_message(message)
 
 
+def send_signup_confirmation(recipient: str) -> None:
+    if not settings.smtp_host or not settings.smtp_sender:
+        raise RuntimeError("SMTP settings are not configured")
+
+    app_url = settings.app_base_url.rstrip("/")
+    quickstart_url = f"{app_url}/insights"
+
+    message = EmailMessage()
+    message["Subject"] = f"Welcome to {settings.email_brand_name}"
+    message["From"] = _email_from_header()
+    message["To"] = recipient
+    text_body = "\n".join(
+        [
+            f"You are all set with {settings.email_brand_name}.",
+            "",
+            "Quickstart:",
+            "1. Forward or send an email to your workspace inbox.",
+            "2. Open Insights to browse saved summaries and metadata.",
+            "3. Use Chat to ask grounded questions across your articles.",
+            "",
+            f"Open your workspace: {quickstart_url}",
+        ]
+    )
+    message.set_content(text_body)
+
+    body_html = (
+        f"<p>Your account is now active in <strong>{settings.email_brand_name}</strong>.</p>"
+        "<p>Quickstart:</p>"
+        "<ol style='margin:0 0 0 18px;padding:0;'>"
+        "<li style='margin:0 0 8px 0;'>Forward or send an email to your workspace inbox.</li>"
+        "<li style='margin:0 0 8px 0;'>Open Insights to review saved summaries and metadata.</li>"
+        "<li style='margin:0;'>Use Chat to ask grounded questions across your articles.</li>"
+        "</ol>"
+    )
+    html_body = _build_html_email(
+        f"Welcome to {settings.email_brand_name}",
+        body_html,
+        "Open workspace",
+        quickstart_url,
+    )
+    message.add_alternative(html_body, subtype="html")
+    _send_message(message)
+
+
 def send_article_reply(
     recipient: str,
     article_title: str,

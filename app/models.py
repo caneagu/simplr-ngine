@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,6 +91,23 @@ class GroupMember(Base):
 
 class Article(Base):
     __tablename__ = "articles"
+    __table_args__ = (
+        Index(
+            "ux_articles_owner_dedupe_null_group",
+            "owner_id",
+            "external_dedupe_key",
+            unique=True,
+            postgresql_where=text("group_id IS NULL AND external_dedupe_key IS NOT NULL"),
+        ),
+        Index(
+            "ux_articles_owner_group_dedupe",
+            "owner_id",
+            "group_id",
+            "external_dedupe_key",
+            unique=True,
+            postgresql_where=text("group_id IS NOT NULL AND external_dedupe_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=func.gen_random_uuid())
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
@@ -99,6 +116,7 @@ class Article(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    external_dedupe_key: Mapped[Optional[str]] = mapped_column(Text)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

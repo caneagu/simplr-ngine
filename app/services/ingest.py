@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import Any
 import uuid
@@ -15,10 +16,28 @@ from app.models import Article, ArticleVersion, Chunk, Group, Source, User, User
 from app.services.auth import normalize_email
 from app.services.chunking import chunk_text
 from app.services.embeddings import embed_texts
-from app.services.emailer import send_article_reply
+from app.services.emailer import send_article_reply, send_signup_confirmation
 from app.services.llm import categorize_and_extract, extract_insights, summarize_text_with_usage
 from app.services.mailersend import InboundEmail
 from app.services.pdf import extract_pdf_text
+
+
+def _dedupe_key_for(inbound: InboundEmail) -> str | None:
+    if inbound.message_id:
+        return f"message:{inbound.message_id.strip().lower()}"
+    if inbound.inbound_id:
+        return f"inbound:{str(inbound.inbound_id).strip()}"
+    stable_payload = "||".join(
+        [
+            (inbound.sender or "").strip().lower(),
+            (inbound.subject or "").strip(),
+            (inbound.text or "").strip(),
+        ]
+    )
+    if not stable_payload.replace("|", "").strip():
+        return None
+    digest = hashlib.sha256(stable_payload.encode("utf-8")).hexdigest()
+    return f"content:{digest}"
 
 
 def _inference_for_user(db: Session, user: User) -> dict | None:
@@ -52,11 +71,13 @@ def _inference_for_user(db: Session, user: User) -> dict | None:
 def ingest_email(inbound: InboundEmail, db: Session) -> Article:
     sender_email = normalize_email(inbound.sender)
     sender_user = db.query(User).filter(User.email == sender_email).first()
+    sender_was_created = False
     if not sender_user:
         sender_user = User(email=sender_email)
         db.add(sender_user)
         try:
             db.flush()
+            sender_was_created = True
         except IntegrityError:
             db.rollback()
             sender_user = db.query(User).filter(User.email == sender_email).first()
@@ -175,6 +196,7 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
         thread_ids.extend(inbound.references)
     seen_ids: set[str] = set()
     thread_ids = [item for item in thread_ids if item and not (item in seen_ids or seen_ids.add(item))]
+    dedupe_key = _dedupe_key_for(inbound)
 
     def _clone_sources() -> list[Source]:
         clones: list[Source] = []
@@ -211,6 +233,8 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
         ]
 
         duplicate_filters = []
+        if dedupe_key:
+            duplicate_filters.append(Article.external_dedupe_key == dedupe_key)
         if inbound.message_id:
             duplicate_filters.append(Article.metadata_["message_id"].astext == inbound.message_id)
         if inbound.inbound_id:
@@ -260,6 +284,8 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
             "inbound_id": inbound.inbound_id,
             "thread_message_ids": thread_ids,
         }
+        if dedupe_key:
+            metadata["external_dedupe_key"] = dedupe_key
 
         if existing_article:
             version_number = len(existing_article.versions) + 1
@@ -295,6 +321,8 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
             existing_article.title = inbound.subject or existing_article.title
             existing_article.summary = summary
             existing_article.content_text = full_text
+            if dedupe_key and not existing_article.external_dedupe_key:
+                existing_article.external_dedupe_key = dedupe_key
             existing_article.metadata_ = metadata
             db.add(existing_article)
             db.query(Source).filter(Source.article_id == existing_article.id).delete(synchronize_session=False)
@@ -329,11 +357,28 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
             title=inbound.subject or "(no subject)",
             summary=summary,
             content_text=full_text,
+            external_dedupe_key=dedupe_key,
             metadata_=metadata,
         )
 
-        db.add(article)
-        db.flush()
+        if dedupe_key:
+            try:
+                with db.begin_nested():
+                    db.add(article)
+                    db.flush()
+            except IntegrityError:
+                existing = (
+                    db.query(Article)
+                    .filter(*scope_filter)
+                    .filter(Article.external_dedupe_key == dedupe_key)
+                    .first()
+                )
+                if existing:
+                    return existing
+                raise
+        else:
+            db.add(article)
+            db.flush()
 
         for source in _clone_sources():
             source.article_id = article.id
@@ -400,6 +445,12 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
                             article.metadata_["thread_message_ids"] = thread_message_ids
                     db.add(article)
                 db.commit()
+
+        if sender_was_created:
+            try:
+                send_signup_confirmation(sender_user.email)
+            except RuntimeError:
+                pass
 
     return processed_articles[0]
 
