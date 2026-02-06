@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS articles (
     title text NOT NULL,
     summary text NOT NULL,
     content_text text NOT NULL,
+    external_dedupe_key text,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
@@ -91,3 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING ivfflat (embeddi
 CREATE INDEX IF NOT EXISTS idx_articles_metadata ON articles USING gin (metadata);
 CREATE INDEX IF NOT EXISTS idx_chunks_metadata ON chunks USING gin (metadata);
 CREATE INDEX IF NOT EXISTS idx_articles_search ON articles USING gin (to_tsvector('english', title || ' ' || summary || ' ' || content_text));
+CREATE INDEX IF NOT EXISTS idx_articles_external_dedupe_key ON articles(external_dedupe_key);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_articles_owner_dedupe_null_group
+ON articles(owner_id, external_dedupe_key)
+WHERE external_dedupe_key IS NOT NULL;

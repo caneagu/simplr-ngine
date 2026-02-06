@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% macro render_folder(nodes, active_id) %}
+{% macro render_folder(nodes, active_id, scope_query) %}
   <ul class="space-y-2">
     {% for node in nodes %}
       <li>
@@ -9,14 +9,14 @@
           data-folder-id="{{ node.id }}"
           draggable="true"
         >
-          <a class="flex-1" href="/articles?folder_id={{ node.id }}">{{ node.name }}</a>
+          <a class="flex-1" href="/articles?folder_id={{ node.id }}{{ scope_query }}">{{ node.name }}</a>
           <form method="post" action="/articles/folders/{{ node.id }}/delete" onsubmit="return confirm('Delete this folder?');">
             <button class="text-xs text-slate-400 hover:text-rose-500" type="submit">Delete</button>
           </form>
         </div>
         {% if node.children %}
           <div class="ml-4 mt-2">
-            {{ render_folder(node.children, active_id) }}
+            {{ render_folder(node.children, active_id, scope_query) }}
           </div>
         {% endif %}
       </li>
@@ -25,24 +25,34 @@
 {% endmacro %}
 
 {% block content %}
+{% set scope_query = '' %}
+{% if scope == 'group' and selected_group %}
+  {% set scope_query = '&scope=group&group_id=' ~ selected_group.id %}
+{% endif %}
+{% if selected_day %}
+  {% set scope_query = scope_query ~ '&day=' ~ selected_day %}
+{% endif %}
 <section class="grid gap-6 lg:grid-cols-[280px_1fr]">
   <aside class="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
     <div class="flex items-center justify-between">
       <h2 class="text-lg font-semibold">Folders</h2>
-      <a class="text-xs text-slate-500 hover:text-slate-700" href="/articles">Root</a>
+      <a class="text-xs text-slate-500 hover:text-slate-700" href="/articles{% if scope_query %}?{{ scope_query.lstrip('&') }}{% endif %}">Root</a>
     </div>
     <form class="mt-4 space-y-2" method="post" action="/articles/folders">
       <input class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" name="name" placeholder="New folder name" required />
       {% if active_folder_id %}
         <input type="hidden" name="parent_id" value="{{ active_folder_id }}" />
       {% endif %}
+      {% if selected_group %}
+        <input type="hidden" name="group_id" value="{{ selected_group.id }}" />
+      {% endif %}
       <button class="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white">Create folder</button>
     </form>
     <div class="mt-6" id="folder-tree">
       <div class="folder-item mb-3 rounded-lg px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50" data-folder-id="" draggable="true">
-        <a class="block" href="/articles">Root</a>
+        <a class="block" href="/articles{% if scope_query %}?{{ scope_query.lstrip('&') }}{% endif %}">Root</a>
       </div>
-      {{ render_folder(folders, active_folder_id) }}
+      {{ render_folder(folders, active_folder_id, scope_query) }}
     </div>
   </aside>
 
@@ -51,9 +61,42 @@
       <div>
         <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Articles</p>
         <h1 class="mt-2 text-2xl font-semibold text-slate-900">Knowledge Base Articles</h1>
+        {% if selected_day %}
+          <p class="mt-2 text-xs text-slate-500">Showing articles created on {{ selected_day }}</p>
+        {% endif %}
       </div>
       <div class="text-xs text-slate-500">Drag articles into folders</div>
     </div>
+
+    <form class="mt-4 flex flex-wrap items-center gap-3" method="get" action="/articles" id="kb-switch">
+      <input type="hidden" name="day" value="{{ selected_day or '' }}" />
+      <input type="hidden" name="folder_id" value="{{ active_folder_id or '' }}" />
+      <input type="hidden" name="scope" id="kb-scope" value="{{ scope }}" />
+      <label class="text-xs uppercase tracking-[0.2em] text-slate-400" for="kb-selector">Knowledge base</label>
+      <select class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/20" id="kb-selector" name="group_id">
+        <option value="" {% if scope != 'group' %}selected{% endif %}>Personal</option>
+        {% for group in groups %}
+          <option value="{{ group.id }}" {% if selected_group and group.id == selected_group.id %}selected{% endif %}>
+            {{ group.name }} ({{ group.slug }}@simplr.ro)
+          </option>
+        {% endfor %}
+      </select>
+    </form>
+
+    {% if scope == 'group' and selected_group %}
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <span class="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-blue-600">
+          Team KB: {{ selected_group.name }}
+        </span>
+        <a class="rounded-full border border-gray-200 px-3 py-1 text-slate-500 hover:text-slate-700" href="/articles{% if selected_day %}?day={{ selected_day }}{% endif %}">Clear team filter</a>
+      </div>
+    {% endif %}
+    {% if selected_day %}
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <span class="rounded-full border border-gray-200 px-3 py-1 text-slate-500">Day: {{ selected_day }}</span>
+        <a class="rounded-full border border-gray-200 px-3 py-1 text-slate-500 hover:text-slate-700" href="/articles{% if scope == 'group' and selected_group %}?scope=group&group_id={{ selected_group.id }}{% endif %}">Clear day filter</a>
+      </div>
+    {% endif %}
 
     <div class="mt-6 overflow-hidden rounded-xl border border-gray-100">
       <table class="w-full text-left text-sm">
@@ -72,14 +115,15 @@
             <tr class="article-row hover:bg-slate-50" draggable="true" data-article-id="{{ article.id }}">
               <td class="px-4 py-3">
                 <a class="font-medium text-slate-900 hover:text-blue-600" href="/articles/{{ article.id }}">{{ article.title }}</a>
-                <p class="mt-1 text-xs text-slate-500">{{ article.summary[:120] }}{% if article.summary|length > 120 %}...{% endif %}</p>
+                {% set summary_text = article.summary | markdown_text %}
+                <p class="mt-1 text-xs text-slate-500">{{ summary_text[:120] }}{% if summary_text|length > 120 %}...{% endif %}</p>
               </td>
               <td class="px-4 py-3 text-slate-600">{{ article.metadata_.get('doc_type', 'other') }}</td>
               <td class="px-4 py-3 text-slate-600">{{ folder_paths.get(article.id, 'Root') }}</td>
               <td class="px-4 py-3 text-slate-600">{{ article.updated_at | format_dt }}</td>
               <td class="px-4 py-3 text-slate-600">{{ version_counts.get(article.id, 0) }}</td>
               <td class="px-4 py-3">
-                <a class="text-xs text-slate-500 hover:text-slate-800" href="/articles/{{ article.id }}/edit">Edit</a>
+                <a class="text-xs text-slate-500 hover:text-slate-800" href="/articles/{{ article.id }}#comments">Comment</a>
               </td>
             </tr>
           {% else %}
@@ -97,6 +141,16 @@
   const rows = document.querySelectorAll('.article-row');
   const folders = document.querySelectorAll('.folder-item');
   let draggedFolderId = null;
+  const kbSelector = document.getElementById('kb-selector');
+  const kbScope = document.getElementById('kb-scope');
+  const kbForm = document.getElementById('kb-switch');
+
+  if (kbSelector && kbScope && kbForm) {
+    kbSelector.addEventListener('change', () => {
+      kbScope.value = kbSelector.value ? 'group' : 'personal';
+      kbForm.submit();
+    });
+  }
 
   rows.forEach(row => {
     row.addEventListener('dragstart', (event) => {

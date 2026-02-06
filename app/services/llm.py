@@ -13,8 +13,21 @@ from app.constants import CATEGORY_OPTIONS, DOC_TYPE_OPTIONS
 from app.services.tokens import count_tokens
 
 
-def _openai_kwargs(provider: Optional[str] = None) -> dict:
+def _openai_kwargs(provider: Optional[str] = None, inference: Optional[dict[str, str]] = None) -> dict:
     active_provider = provider or settings.llm_provider
+    if inference and inference.get("api_key"):
+        base_url = inference.get("base_url")
+        inferred_provider = inference.get("provider") or active_provider
+        if inferred_provider == "openrouter" or base_url:
+            return {
+                "api_key": inference["api_key"],
+                "base_url": base_url or settings.openrouter_base_url,
+                "default_headers": {
+                    "HTTP-Referer": settings.app_base_url or "http://localhost",
+                    "X-Title": inference.get("title") or "simplr",
+                },
+            }
+        return {"api_key": inference["api_key"], **({"base_url": base_url} if base_url else {})}
     if active_provider == "openrouter":
         if not settings.openrouter_api_key:
             return {}
@@ -22,8 +35,8 @@ def _openai_kwargs(provider: Optional[str] = None) -> dict:
             "api_key": settings.openrouter_api_key,
             "base_url": settings.openrouter_base_url,
             "default_headers": {
-                "HTTP-Referer": "http://localhost",
-                "X-Title": "rag-email-mvp",
+                "HTTP-Referer": settings.app_base_url or "http://localhost",
+                "X-Title": "simplr",
             },
         }
     if not settings.openai_api_key:
@@ -36,8 +49,9 @@ def get_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ) -> Optional[ChatOpenAI]:
-    kwargs = _openai_kwargs(provider)
+    kwargs = _openai_kwargs(provider, inference)
     if not kwargs:
         return None
     model_name = model or settings.llm_model
@@ -67,11 +81,19 @@ SUMMARY_USER_PROMPT = "Summarize the following content in 4-7 bullet points.\n\n
 
 RAG_SYSTEM_PROMPT = (
     "You answer questions using the provided knowledge base context. "
-    "Always respond in clean Markdown with proper headings, paragraphs, and lists. "
-    "Leave a blank line between paragraphs and before lists. "
-    "If the answer is not in the context, provide a best-effort response "
-    "based on the closest relevant context and start with the disclaimer: "
-    "'Closest match in the knowledge base:'. If no context is provided, say you don't know."
+    "Output must be valid, readable Markdown. "
+    "Formatting rules: "
+    "1) Use short headings (## / ###) for sections when useful. "
+    "2) Put every heading on its own line. "
+    "3) Leave a blank line between paragraphs, headings, and lists. "
+    "4) For steps, use numbered lists with one step per line. "
+    "5) Put commands/code in fenced code blocks using triple backticks and a language tag when clear. "
+    "6) Never inline long code in normal paragraphs. "
+    "7) Keep prose concise and scannable. "
+    "8) When citing sources, always use complete bracketed citations like [1] and separate multiple citations with spaces (example: [1] [2]). "
+    "If the answer is not in the context, provide a best-effort response based on the closest relevant context "
+    "and start with the disclaimer: 'Closest match in the knowledge base:'. "
+    "If no context is provided, say you don't know."
 )
 RAG_USER_PROMPT = (
     "Context:\n{context}\n\nQuestion:\n{question}\n\n"
@@ -80,18 +102,22 @@ RAG_USER_PROMPT = (
 )
 
 FREE_SYSTEM_PROMPT = (
-    "You are a helpful assistant. Answer directly and clearly. "
+    "You are a helpful assistant. "
+    "Always respond in valid Markdown that is easy to scan. "
+    "Use headings/lists when helpful, keep blank lines between sections, "
+    "and place code/commands in fenced code blocks (```language ... ```). "
+    "Avoid collapsing headings, lists, and code into a single paragraph. "
     "If you are uncertain, say so briefly and suggest how to verify."
 )
 
 
-def summarize_text(text: str) -> str:
-    summary, _usage = summarize_text_with_usage(text)
+def summarize_text(text: str, inference: Optional[dict[str, str]] = None) -> str:
+    summary, _usage = summarize_text_with_usage(text, inference=inference)
     return summary
 
 
-def summarize_text_with_usage(text: str) -> tuple[str, dict[str, int]]:
-    llm = get_llm()
+def summarize_text_with_usage(text: str, inference: Optional[dict[str, str]] = None) -> tuple[str, dict[str, int]]:
+    llm = get_llm(inference=inference)
     if llm is None:
         summary = text[:700].strip()
         prompt_tokens = count_tokens(text)
@@ -148,8 +174,8 @@ def _fallback_classification() -> dict:
     }
 
 
-def categorize_and_extract(text: str) -> dict:
-    llm = get_llm()
+def categorize_and_extract(text: str, inference: Optional[dict[str, str]] = None) -> dict:
+    llm = get_llm(inference=inference)
     if llm is None:
         return _fallback_classification()
 
@@ -207,8 +233,8 @@ def categorize_and_extract(text: str) -> dict:
     }
 
 
-def extract_insights(text: str) -> dict:
-    llm = get_llm()
+def extract_insights(text: str, inference: Optional[dict[str, str]] = None) -> dict:
+    llm = get_llm(inference=inference)
     if llm is None:
         return {}
 
@@ -256,8 +282,9 @@ def answer_with_context(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ) -> str:
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return "LLM is not configured. Set your API key to enable answers."
 
@@ -277,8 +304,9 @@ def answer_freely(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ) -> str:
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return "LLM is not configured. Set your API key to enable answers."
 
@@ -300,8 +328,9 @@ def stream_answer_with_context(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ):
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return ["LLM is not configured. Set your API key to enable answers."]
 
@@ -326,8 +355,9 @@ def stream_answer_freely(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     provider: Optional[str] = None,
+    inference: Optional[dict[str, str]] = None,
 ):
-    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider)
+    llm = get_llm(model=model, temperature=temperature, max_tokens=max_tokens, provider=provider, inference=inference)
     if llm is None:
         return ["LLM is not configured. Set your API key to enable answers."]
 
@@ -345,10 +375,10 @@ def stream_answer_freely(
             yield content
 
 
-def extract_text_from_images(image_bytes: list[bytes]) -> str:
+def extract_text_from_images(image_bytes: list[bytes], inference: Optional[dict[str, str]] = None) -> str:
     if not image_bytes:
         return ""
-    llm = get_llm(model=settings.vision_model)
+    llm = get_llm(model=settings.vision_model, inference=inference)
     if llm is None:
         return ""
     content_parts = [{"type": "text", "text": "Extract the text from these images. Return plain text."}]

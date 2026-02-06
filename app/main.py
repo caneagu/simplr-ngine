@@ -8,23 +8,36 @@ import re
 import uuid
 import urllib.request
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 import markdown
+from bs4 import BeautifulSoup
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
-from sqlalchemy import func, or_, text
+from sqlalchemy import Integer, and_, cast, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import CATEGORIES
-from app.db import get_db
-from app.models import Article, ArticleVersion, Chunk, Folder, MagicLinkToken, SessionToken, Source, User
+from app.db import engine, get_db
+from app.models import (
+    Article,
+    ArticleVersion,
+    Chunk,
+    Folder,
+    Group,
+    GroupMember,
+    MagicLinkToken,
+    SessionToken,
+    Source,
+    UserInferenceConfig,
+    User,
+)
 from app.schemas import ArticleRead, ArticleUpdate
 from app.services.auth import (
     generate_token,
@@ -47,9 +60,9 @@ from app.services.llm import (
 )
 from app.services.mailersend import parse_mailersend_payload
 
-app = FastAPI(title="RAG Email MVP")
+app = FastAPI(title="Simplr")
 
-logger = logging.getLogger("rag-email-mvp")
+logger = logging.getLogger("simplr")
 
 CHAT_MEMORY: dict[str, list[dict[str, str]]] = {}
 CHAT_MEMORY_LIMIT = 6
@@ -71,6 +84,49 @@ def render_markdown(text: Optional[str]) -> Markup:
 
 
 templates.env.filters["markdown"] = render_markdown
+
+
+def render_markdown_text(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    html = markdown.markdown(text, extensions=["extra", "nl2br", "sane_lists"])
+    soup = BeautifulSoup(html, "html.parser")
+    return re.sub(r"\s+", " ", soup.get_text(" ")).strip()
+
+
+templates.env.filters["markdown_text"] = render_markdown_text
+
+
+@app.on_event("startup")
+def ensure_ingest_dedupe_schema() -> None:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE articles ADD COLUMN IF NOT EXISTS external_dedupe_key text"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_articles_external_dedupe_key "
+                "ON articles(external_dedupe_key)"
+            )
+        )
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_articles_owner_dedupe_null_group "
+                    "ON articles(owner_id, external_dedupe_key) "
+                    "WHERE group_id IS NULL AND external_dedupe_key IS NOT NULL"
+                )
+            )
+        except Exception as exc:
+            logger.warning("Could not create private-scope dedupe index: %s", exc)
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_articles_owner_group_dedupe "
+                    "ON articles(owner_id, group_id, external_dedupe_key) "
+                    "WHERE group_id IS NOT NULL AND external_dedupe_key IS NOT NULL"
+                )
+            )
+        except Exception as exc:
+            logger.warning("Could not create group-scope dedupe index: %s", exc)
 
 
 def format_dt(value: Any) -> str:
@@ -152,6 +208,108 @@ def _template_context(
     }
     context.update(kwargs)
     return context
+
+
+def _normalize_group_slug(value: str) -> str:
+    return value.strip().lower()
+
+
+def _valid_group_slug(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9]+", value))
+
+
+def _user_groups(db: Session, user: User) -> list[Group]:
+    return (
+        db.query(Group)
+        .outerjoin(GroupMember, GroupMember.group_id == Group.id)
+        .filter(
+            or_(
+                Group.owner_id == user.id,
+                GroupMember.user_id == user.id,
+            )
+        )
+        .distinct()
+        .order_by(Group.created_at.desc())
+        .all()
+    )
+
+
+def _group_ids_for_user(db: Session, user: User) -> set[uuid.UUID]:
+    return {group.id for group in _user_groups(db, user)}
+
+
+def _resolve_scope(
+    db: Session,
+    user: User,
+    scope: Optional[str],
+    group_id: Optional[str],
+) -> tuple[str, Optional[Group]]:
+    if scope != "group":
+        return "personal", None
+    if not group_id:
+        return "personal", None
+    try:
+        group_uuid = uuid.UUID(group_id)
+    except ValueError:
+        return "personal", None
+    group = db.get(Group, group_uuid)
+    if not group:
+        return "personal", None
+    if group.owner_id != user.id:
+        is_member = (
+            db.query(GroupMember)
+            .filter(GroupMember.group_id == group.id, GroupMember.user_id == user.id)
+            .first()
+        )
+        if not is_member:
+            return "personal", None
+    return "group", group
+
+
+def _article_accessible(article: Article, user: User, group_ids: set[uuid.UUID]) -> bool:
+    if article.group_id:
+        return article.group_id in group_ids
+    return article.owner_id == user.id
+
+
+def _folder_accessible(folder: Folder, user: User, group_ids: set[uuid.UUID]) -> bool:
+    if folder.group_id:
+        return folder.group_id in group_ids
+    return folder.owner_id == user.id
+
+
+def _get_user_inference_config(db: Session, user: User) -> Optional[dict[str, str]]:
+    config: Optional[UserInferenceConfig] = None
+    if user.default_inference_id:
+        config = db.get(UserInferenceConfig, user.default_inference_id)
+    if not config:
+        config = (
+            db.query(UserInferenceConfig)
+            .filter(UserInferenceConfig.user_id == user.id)
+            .order_by(UserInferenceConfig.created_at.desc())
+            .first()
+        )
+    if config:
+        return {
+            "provider": config.provider,
+            "api_key": config.api_key,
+            "base_url": config.base_url or "",
+            "title": "simplr",
+        }
+    if user.inference_api_key:
+        return {
+            "provider": "openrouter",
+            "api_key": user.inference_api_key,
+            "base_url": user.inference_endpoint or settings.openrouter_base_url,
+            "title": "simplr",
+        }
+    return None
+
+
+def _provider_for_inference(inference: Optional[dict[str, str]]) -> str:
+    if inference and inference.get("provider"):
+        return inference["provider"]
+    return settings.llm_provider
 
 
 def _detect_category_from_question(question: str) -> Optional[str]:
@@ -274,6 +432,64 @@ def _build_context(articles: list[Article]) -> str:
     return "\n\n".join(parts)
 
 
+def _article_comments(article: Article) -> list[dict[str, Any]]:
+    metadata = article.metadata_ or {}
+    comments = metadata.get("comments")
+    if not isinstance(comments, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for entry in comments:
+        if not isinstance(entry, dict):
+            continue
+        mode = entry.get("mode")
+        if mode not in {"augment", "supersede"}:
+            mode = "augment"
+        normalized.append(
+            {
+                "id": entry.get("id"),
+                "mode": mode,
+                "author_email": entry.get("author_email") or "unknown",
+                "created_at": entry.get("created_at"),
+                "comment_text": (entry.get("comment_text") or "").strip(),
+                "replacement_summary": (entry.get("replacement_summary") or "").strip(),
+                "replacement_content": (entry.get("replacement_content") or "").strip(),
+            }
+        )
+    return normalized
+
+
+def _effective_article_view(article: Article) -> dict[str, Any]:
+    effective_summary = article.summary or ""
+    effective_content = article.content_text or ""
+    comments = _article_comments(article)
+    has_override = False
+    for comment in comments:
+        if comment["mode"] == "supersede":
+            if comment["replacement_summary"]:
+                effective_summary = comment["replacement_summary"]
+                has_override = True
+            if comment["replacement_content"]:
+                effective_content = comment["replacement_content"]
+                has_override = True
+            continue
+        if comment["mode"] == "augment":
+            if comment["comment_text"]:
+                effective_content = (
+                    effective_content
+                    + "\n\n"
+                    + f"[User comment by {comment['author_email']} at {comment['created_at']}]"
+                    + "\n"
+                    + comment["comment_text"]
+                ).strip()
+                has_override = True
+    return {
+        "summary": effective_summary,
+        "content_text": effective_content,
+        "has_override": has_override,
+        "comments": comments,
+    }
+
+
 def _build_cited_context(sources: list[dict[str, Any]]) -> str:
     parts = ["Sources:"]
     for source in sources:
@@ -353,15 +569,30 @@ def _resolve_folder_path(db: Session, folder_id: Optional[uuid.UUID]) -> Optiona
     folder = db.get(Folder, folder_id)
     if not folder:
         return None
-    folders = db.query(Folder).filter(Folder.owner_id == folder.owner_id).all()
+    if folder.group_id:
+        folders = db.query(Folder).filter(Folder.group_id == folder.group_id).all()
+    else:
+        folders = db.query(Folder).filter(Folder.owner_id == folder.owner_id).all()
     paths = _folder_paths_map(folders)
     return paths.get(folder_id)
 
 
-def _sync_article_folder_metadata(db: Session, owner_id: uuid.UUID) -> None:
-    folders = db.query(Folder).filter(Folder.owner_id == owner_id).all()
+def _sync_article_folder_metadata(
+    db: Session,
+    owner_id: uuid.UUID,
+    group_id: Optional[uuid.UUID] = None,
+) -> None:
+    if group_id:
+        folders = db.query(Folder).filter(Folder.group_id == group_id).all()
+        articles = db.query(Article).filter(Article.group_id == group_id).all()
+    else:
+        folders = db.query(Folder).filter(Folder.owner_id == owner_id, Folder.group_id.is_(None)).all()
+        articles = (
+            db.query(Article)
+            .filter(Article.owner_id == owner_id, Article.group_id.is_(None))
+            .all()
+        )
     folder_paths = _folder_paths_map(folders)
-    articles = db.query(Article).filter(Article.owner_id == owner_id).all()
     for article in articles:
         if article.metadata_ is None:
             article.metadata_ = {}
@@ -488,6 +719,253 @@ def auth_callback(request: Request, token: str, db: Session = Depends(get_db)):
     return response
 
 
+@app.get("/profile", response_class=HTMLResponse)
+def profile_ui(request: Request, db: Session = Depends(get_db)):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    total_tokens = (
+        db.query(
+            func.coalesce(
+                func.sum(cast(Article.metadata_["summary_tokens"]["total_tokens"].astext, Integer)),
+                0,
+            )
+        )
+        .filter(Article.owner_id == current_user.id)
+        .scalar()
+        or 0
+    )
+
+    owned_groups = (
+        db.query(Group)
+        .filter(Group.owner_id == current_user.id)
+        .order_by(Group.created_at.desc())
+        .all()
+    )
+    inference_configs = (
+        db.query(UserInferenceConfig)
+        .filter(UserInferenceConfig.user_id == current_user.id)
+        .order_by(UserInferenceConfig.created_at.desc())
+        .all()
+    )
+    group_ids = [group.id for group in owned_groups]
+    members_by_group: dict[uuid.UUID, list[User]] = {}
+    if group_ids:
+        members = (
+            db.query(GroupMember, User)
+            .join(User, User.id == GroupMember.user_id)
+            .filter(GroupMember.group_id.in_(group_ids))
+            .order_by(User.email.asc())
+            .all()
+        )
+        for member, user in members:
+            members_by_group.setdefault(member.group_id, []).append(user)
+
+    member_groups = [group for group in _user_groups(db, current_user) if group.owner_id != current_user.id]
+
+    return templates.TemplateResponse(
+        "profile.html",
+        _template_context(
+            request,
+            current_user,
+            session,
+            total_tokens=total_tokens,
+            owned_groups=owned_groups,
+            members_by_group=members_by_group,
+            member_groups=member_groups,
+            inference_configs=inference_configs,
+        ),
+    )
+
+
+@app.post("/profile")
+def profile_update(
+    request: Request,
+    mobile_phone: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    current_user.mobile_phone = mobile_phone.strip() or None
+    db.add(current_user)
+    db.commit()
+
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/profile/inference")
+def add_inference_config(
+    request: Request,
+    name: str = Form(...),
+    provider: str = Form("openrouter"),
+    base_url: str = Form(""),
+    api_key: str = Form(""),
+    make_default: Optional[bool] = Form(False),
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Endpoint name is required")
+    if not api_key.strip():
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    config = UserInferenceConfig(
+        user_id=current_user.id,
+        name=name.strip(),
+        provider=provider.strip() or "openrouter",
+        base_url=base_url.strip() or None,
+        api_key=api_key.strip(),
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+
+    if make_default or not current_user.default_inference_id:
+        current_user.default_inference_id = config.id
+        db.add(current_user)
+        db.commit()
+
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/profile/inference/{config_id}/default")
+def set_default_inference_config(
+    config_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    config = db.get(UserInferenceConfig, config_id)
+    if not config or config.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Inference config not found")
+
+    current_user.default_inference_id = config.id
+    db.add(current_user)
+    db.commit()
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/profile/inference/{config_id}/delete")
+def delete_inference_config(
+    config_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    config = db.get(UserInferenceConfig, config_id)
+    if not config or config.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Inference config not found")
+
+    if current_user.default_inference_id == config.id:
+        current_user.default_inference_id = None
+        db.add(current_user)
+    db.delete(config)
+    db.commit()
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/profile/groups")
+def create_group(
+    request: Request,
+    name: str = Form(...),
+    group_slug: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    slug = _normalize_group_slug(group_slug)
+    if not slug or not _valid_group_slug(slug):
+        raise HTTPException(status_code=400, detail="Group address must include letters and numbers only.")
+    if db.query(Group).filter(Group.slug == slug).first():
+        raise HTTPException(status_code=400, detail="Group address already in use.")
+
+    group = Group(owner_id=current_user.id, name=name.strip() or slug, slug=slug)
+    db.add(group)
+    db.commit()
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/profile/groups/{group_id}/members")
+def add_group_member(
+    group_id: str,
+    request: Request,
+    email: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    group = db.get(Group, group_id)
+    if not group or group.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    normalized = normalize_email(email)
+    user = db.query(User).filter(User.email == normalized).first()
+    if not user:
+        user = User(email=normalized)
+        db.add(user)
+        db.flush()
+
+    exists = (
+        db.query(GroupMember)
+        .filter(GroupMember.group_id == group.id, GroupMember.user_id == user.id)
+        .first()
+    )
+    if not exists:
+        db.add(GroupMember(group_id=group.id, user_id=user.id, role="member"))
+        db.commit()
+
+    return RedirectResponse(url="/profile", status_code=303)
+
+
+@app.post("/profile/groups/{group_id}/members/{member_id}/remove")
+def remove_group_member(
+    group_id: str,
+    member_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    session, current_user = _get_session_and_user(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+
+    group = db.get(Group, group_id)
+    if not group or group.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    try:
+        member_uuid = uuid.UUID(member_id)
+    except ValueError:
+        member_uuid = None
+    member = None
+    if member_uuid:
+        member = (
+            db.query(GroupMember)
+            .filter(GroupMember.group_id == group.id, GroupMember.user_id == member_uuid)
+            .first()
+        )
+    if member:
+        db.delete(member)
+        db.commit()
+
+    return RedirectResponse(url="/profile", status_code=303)
+
+
 @app.post("/logout")
 def logout(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get(SESSION_COOKIE)
@@ -520,6 +998,15 @@ def list_openrouter_models():
     return {"models": sorted(models)}
 
 
+@app.get("/health")
+def healthcheck(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok"}
+
+
 @app.post("/webhooks/mailersend", status_code=202)
 def mailersend_webhook(
     payload: dict[str, Any],
@@ -536,24 +1023,6 @@ def mailersend_webhook(
             "status": "ignored",
             "detail": {"error": "No content in payload", "payload_keys": payload_keys, "data_keys": data_keys},
         }
-
-    if inbound.message_id:
-        exists = (
-            db.query(Article)
-            .filter(Article.metadata_["message_id"].astext == inbound.message_id)
-            .first()
-        )
-        if exists:
-            return {"status": "duplicate", "article_id": str(exists.id)}
-
-    if inbound.inbound_id:
-        exists = (
-            db.query(Article)
-            .filter(Article.metadata_["inbound_id"].astext == inbound.inbound_id)
-            .first()
-        )
-        if exists:
-            return {"status": "duplicate", "article_id": str(exists.id)}
 
     background_tasks.add_task(ingest_email_job, inbound)
     return {"status": "accepted"}
@@ -575,7 +1044,8 @@ def list_articles(request: Request, db: Session = Depends(get_db)):
 def get_article(article_id: str, request: Request, db: Session = Depends(get_db)):
     user = _require_user_api(request, db)
     article = db.get(Article, article_id)
-    if not article or article.owner_id != user.id:
+    group_ids = _group_ids_for_user(db, user)
+    if not article or not _article_accessible(article, user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
     return article
 
@@ -584,7 +1054,8 @@ def get_article(article_id: str, request: Request, db: Session = Depends(get_db)
 def update_article(article_id: str, payload: ArticleUpdate, request: Request, db: Session = Depends(get_db)):
     user = _require_user_api(request, db)
     article = db.get(Article, article_id)
-    if not article or article.owner_id != user.id:
+    group_ids = _group_ids_for_user(db, user)
+    if not article or not _article_accessible(article, user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
 
     version_number = len(article.versions) + 1
@@ -616,7 +1087,8 @@ def update_article(article_id: str, payload: ArticleUpdate, request: Request, db
 def delete_article(article_id: str, request: Request, db: Session = Depends(get_db)):
     user = _require_user_api(request, db)
     article = db.get(Article, article_id)
-    if not article or article.owner_id != user.id:
+    group_ids = _group_ids_for_user(db, user)
+    if not article or not _article_accessible(article, user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
     db.delete(article)
     db.commit()
@@ -642,10 +1114,15 @@ def search_articles(request: Request, query: str, limit: int = 10, db: Session =
         func.to_tsvector("english", Article.title + " " + Article.summary + " " + Article.content_text),
         ts_query,
     ).label("ts_rank")
+    group_ids = _group_ids_for_user(db, user)
+    access_filter = or_(
+        and_(Article.owner_id == user.id, Article.group_id.is_(None)),
+        Article.group_id.in_(list(group_ids) or [uuid.UUID(int=0)]),
+    )
     results = (
         db.query(Chunk, Article, distance, ts_rank)
         .join(Article, Article.id == Chunk.article_id)
-        .filter(Article.owner_id == user.id)
+        .filter(access_filter)
         .order_by(distance)
         .limit(limit * 3)
         .all()
@@ -678,7 +1155,14 @@ def search_articles(request: Request, query: str, limit: int = 10, db: Session =
 
 
 @app.get("/insights", response_class=HTMLResponse)
-def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional[str] = None, category: Optional[str] = None):
+def insights_ui(
+    request: Request,
+    db: Session = Depends(get_db),
+    query: Optional[str] = None,
+    category: Optional[str] = None,
+    scope: Optional[str] = None,
+    group_id: Optional[str] = None,
+):
     session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
@@ -687,6 +1171,13 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
     results = []
     articles = []
 
+    scope_name, selected_group = _resolve_scope(db, current_user, scope, group_id)
+    groups = _user_groups(db, current_user)
+    if scope_name == "group" and selected_group:
+        article_scope_filter = Article.group_id == selected_group.id
+    else:
+        article_scope_filter = and_(Article.owner_id == current_user.id, Article.group_id.is_(None))
+
     selected_category = category if category in CATEGORIES else "all"
 
     if query:
@@ -694,6 +1185,32 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
             query_embedding = embed_query(query)
         except RuntimeError as exc:
             error = str(exc)
+            like_query = f"%{query.strip()}%"
+            fallback_query = db.query(Article).filter(article_scope_filter).filter(
+                or_(
+                    Article.title.ilike(like_query),
+                    Article.summary.ilike(like_query),
+                    Article.content_text.ilike(like_query),
+                )
+            )
+            if selected_category != "all":
+                fallback_query = fallback_query.filter(
+                    or_(
+                        Article.metadata_["category"].astext == selected_category,
+                        Article.metadata_["categories"].contains([selected_category]),
+                    )
+                )
+            fallback_articles = fallback_query.order_by(Article.updated_at.desc()).limit(20).all()
+            results = [
+                {
+                    "article": article,
+                    "snippet": (article.summary or article.content_text or "")[:240],
+                    "similarity": None,
+                    "semantic_score": None,
+                    "lexical_score": None,
+                }
+                for article in fallback_articles
+            ]
         else:
             terms = _keyword_terms(query)
             distance = Chunk.embedding.cosine_distance(query_embedding).label("distance")
@@ -705,7 +1222,7 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
             match_query = (
                 db.query(Chunk, Article, distance, ts_rank)
                 .join(Article, Article.id == Chunk.article_id)
-                .filter(Article.owner_id == current_user.id)
+                .filter(article_scope_filter)
             )
             if selected_category != "all":
                 match_query = match_query.filter(
@@ -739,8 +1256,37 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
                         "lexical_score": lexical,
                     }
             results = sorted(scored.values(), key=lambda item: item["similarity"], reverse=True)[:20]
+
+            # Fallback when vector search has no chunks for otherwise relevant articles.
+            if not results:
+                like_query = f"%{query.strip()}%"
+                fallback_query = db.query(Article).filter(article_scope_filter).filter(
+                    or_(
+                        Article.title.ilike(like_query),
+                        Article.summary.ilike(like_query),
+                        Article.content_text.ilike(like_query),
+                    )
+                )
+                if selected_category != "all":
+                    fallback_query = fallback_query.filter(
+                        or_(
+                            Article.metadata_["category"].astext == selected_category,
+                            Article.metadata_["categories"].contains([selected_category]),
+                        )
+                    )
+                fallback_articles = fallback_query.order_by(Article.updated_at.desc()).limit(20).all()
+                results = [
+                    {
+                        "article": article,
+                        "snippet": (article.summary or article.content_text or "")[:240],
+                        "similarity": None,
+                        "semantic_score": None,
+                        "lexical_score": None,
+                    }
+                    for article in fallback_articles
+                ]
     else:
-        list_query = db.query(Article).filter(Article.owner_id == current_user.id)
+        list_query = db.query(Article).filter(article_scope_filter)
         if selected_category != "all":
             list_query = list_query.filter(
                 or_(
@@ -750,17 +1296,38 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
             )
         articles = list_query.order_by(Article.created_at.desc()).all()
 
-    article_count = db.query(func.count(Article.id)).filter(Article.owner_id == current_user.id).scalar() or 0
+    article_count = db.query(func.count(Article.id)).filter(article_scope_filter).scalar() or 0
+    today = datetime.utcnow().date()
+    start_date = today - timedelta(days=6)
+    daily_counts = (
+        db.query(func.date(Article.created_at).label("day"), func.count(Article.id))
+        .filter(article_scope_filter, Article.created_at >= start_date)
+        .group_by("day")
+        .order_by("day")
+        .all()
+    )
+    daily_counts_map = {day: count for day, count in daily_counts}
+    article_activity = []
+    for offset in range(7):
+        day = start_date + timedelta(days=offset)
+        article_activity.append(
+            {
+                "label": day.strftime("%b %d"),
+                "count": daily_counts_map.get(day, 0),
+                "date": day.isoformat(),
+            }
+        )
+    activity_max = max([item["count"] for item in article_activity], default=0)
     text_bytes = (
         db.query(func.coalesce(func.sum(func.length(Article.content_text)), 0))
-        .filter(Article.owner_id == current_user.id)
+        .filter(article_scope_filter)
         .scalar()
         or 0
     )
     chunk_bytes = (
         db.query(func.coalesce(func.sum(func.length(Chunk.content)), 0))
         .join(Article, Article.id == Chunk.article_id)
-        .filter(Article.owner_id == current_user.id)
+        .filter(article_scope_filter)
         .scalar()
         or 0
     )
@@ -768,7 +1335,7 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
     sources = (
         db.query(Source.source_uri)
         .join(Article, Article.id == Source.article_id)
-        .filter(Article.owner_id == current_user.id, Source.source_type == "attachment")
+        .filter(article_scope_filter, Source.source_type == "attachment")
         .all()
     )
     for (uri,) in sources:
@@ -790,6 +1357,11 @@ def insights_ui(request: Request, db: Session = Depends(get_db), query: Optional
             user_data_size=user_data_size,
             llm_model=settings.llm_model,
             embedding_model=settings.embedding_model,
+            article_activity=article_activity,
+            article_activity_max=max(1, activity_max),
+            scope=scope_name,
+            selected_group=selected_group,
+            groups=groups,
             articles=articles,
             query=query or "",
             category=selected_category,
@@ -806,6 +1378,19 @@ def chat_ui(request: Request, db: Session = Depends(get_db)):
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
 
+    scope_name, selected_group = _resolve_scope(
+        db,
+        current_user,
+        request.query_params.get("scope"),
+        request.query_params.get("group_id"),
+    )
+    groups = _user_groups(db, current_user)
+    inference_configs = (
+        db.query(UserInferenceConfig)
+        .filter(UserInferenceConfig.user_id == current_user.id)
+        .order_by(UserInferenceConfig.created_at.desc())
+        .all()
+    )
     session_id = _get_session_id(request)
     response = templates.TemplateResponse(
         "chat.html",
@@ -817,6 +1402,10 @@ def chat_ui(request: Request, db: Session = Depends(get_db)):
             answer=None,
             references=[],
             error=None,
+            scope=scope_name,
+            selected_group=selected_group,
+            groups=groups,
+            inference_configs=inference_configs,
         ),
     )
     response.set_cookie("rag_session_id", session_id, max_age=60 * 60 * 6)
@@ -828,6 +1417,9 @@ def chat_submit(
     request: Request,
     question: str = Form(...),
     ground: bool = Form(True),
+    scope: Optional[str] = Form(None),
+    group_id: Optional[str] = Form(None),
+    inference_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     session, current_user = _get_session_and_user(request, db)
@@ -836,6 +1428,15 @@ def chat_submit(
     error = None
     answer = None
     references = []
+
+    scope_name, selected_group = _resolve_scope(db, current_user, scope, group_id)
+    groups = _user_groups(db, current_user)
+    inference_configs = (
+        db.query(UserInferenceConfig)
+        .filter(UserInferenceConfig.user_id == current_user.id)
+        .order_by(UserInferenceConfig.created_at.desc())
+        .all()
+    )
 
     stats_answer = _maybe_stats_answer(question, current_user, db)
     if stats_answer:
@@ -849,11 +1450,28 @@ def chat_submit(
                 answer=stats_answer,
                 references=[],
                 error=None,
+                scope=scope_name,
+                selected_group=selected_group,
+                groups=groups,
             ),
         )
 
+    if not inference_id:
+        inference_id = request.query_params.get("inference_id")
     if not ground:
-        answer = answer_freely(question)
+        inference = _get_user_inference_config(db, current_user)
+        provider = _provider_for_inference(inference)
+        if inference_id:
+            override = db.get(UserInferenceConfig, inference_id)
+            if override and override.user_id == current_user.id:
+                inference = {
+                    "provider": override.provider,
+                    "api_key": override.api_key,
+                    "base_url": override.base_url or "",
+                    "title": "simplr",
+                }
+                provider = _provider_for_inference(inference)
+        answer = answer_freely(question, provider=provider, inference=inference)
         return templates.TemplateResponse(
             "chat.html",
             _template_context(
@@ -864,6 +1482,10 @@ def chat_submit(
                 answer=answer,
                 references=[],
                 error=None,
+                scope=scope_name,
+                selected_group=selected_group,
+                groups=groups,
+                inference_configs=inference_configs,
             ),
         )
 
@@ -888,7 +1510,10 @@ def chat_submit(
     matches = (
         db.query(Chunk, Article, distance)
         .join(Article, Article.id == Chunk.article_id)
-        .filter(Article.owner_id == current_user.id)
+        .filter(
+            Article.group_id == selected_group.id if scope_name == "group" and selected_group else
+            and_(Article.owner_id == current_user.id, Article.group_id.is_(None))
+        )
         .order_by(distance)
         .limit(30)
         .all()
@@ -934,7 +1559,18 @@ def chat_submit(
         source["index"] = index
 
     context = _build_cited_context(sources) if sources else ""
-    answer = answer_with_context(question, context)
+    inference = _get_user_inference_config(db, current_user)
+    if inference_id:
+        override = db.get(UserInferenceConfig, inference_id)
+        if override and override.user_id == current_user.id:
+            inference = {
+                "provider": override.provider,
+                "api_key": override.api_key,
+                "base_url": override.base_url or "",
+                "title": "simplr",
+            }
+    provider = _provider_for_inference(inference)
+    answer = answer_with_context(question, context, provider=provider, inference=inference)
 
     for source in sources:
         references.append(
@@ -957,6 +1593,10 @@ def chat_submit(
             answer=answer,
             references=references,
             error=error,
+            scope=scope_name,
+            selected_group=selected_group,
+            groups=groups,
+            inference_configs=inference_configs,
         ),
     )
 
@@ -971,6 +1611,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     question = (payload.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
+    scope = payload.get("scope")
+    group_id = payload.get("group_id")
+    inference_id = payload.get("inference_id")
     model = payload.get("model")
     provider = payload.get("provider")
     temperature = payload.get("temperature")
@@ -984,19 +1627,32 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
         max_tokens = int(max_tokens) if max_tokens is not None else None
     except (TypeError, ValueError):
         max_tokens = None
-    if provider == "openrouter" and not settings.openrouter_api_key:
+    inference = _get_user_inference_config(db, current_user)
+    if inference_id:
+        override = db.get(UserInferenceConfig, inference_id)
+        if override and override.user_id == current_user.id:
+            inference = {
+                "provider": override.provider,
+                "api_key": override.api_key,
+                "base_url": override.base_url or "",
+                "title": "simplr",
+            }
+    provider = _provider_for_inference(inference) if provider is None else provider
+    if provider == "openrouter" and not settings.openrouter_api_key and not inference:
         raise HTTPException(status_code=400, detail="OpenRouter is not configured")
+
+    scope_name, selected_group = _resolve_scope(db, current_user, scope, group_id)
 
     stats_answer = _maybe_stats_answer(question, current_user, db)
     if stats_answer:
         async def event_stream():
             context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
-            yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+            yield f"event: context\ndata: {json.dumps({'b64': context_b64})}\n\n"
             refs_b64 = base64.b64encode(json.dumps([]).encode("utf-8")).decode("utf-8")
-            yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
-            yield f"event: answer\\ndata: {json.dumps(stats_answer)}\\n\\n"
-            yield f"event: usage\\ndata: {json.dumps({'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})}\\n\\n"
-            yield "event: done\\ndata: {}\\n\\n"
+            yield f"event: refs\ndata: {json.dumps({'b64': refs_b64})}\n\n"
+            yield f"event: answer\ndata: {json.dumps(stats_answer)}\n\n"
+            yield f"event: usage\ndata: {json.dumps({'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})}\n\n"
+            yield "event: done\ndata: {}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1007,9 +1663,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     if not ground:
         async def event_stream():
             context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
-            yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+            yield f"event: context\ndata: {json.dumps({'b64': context_b64})}\n\n"
             refs_b64 = base64.b64encode(json.dumps([]).encode("utf-8")).decode("utf-8")
-            yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
+            yield f"event: refs\ndata: {json.dumps({'b64': refs_b64})}\n\n"
             answer_parts: list[str] = []
             try:
                 for token in stream_answer_freely(
@@ -1019,12 +1675,13 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
                     temperature=temperature,
                     max_tokens=max_tokens,
                     provider=provider,
+                    inference=inference,
                 ):
                     answer_parts.append(token)
-                    yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+                    yield f"event: answer\ndata: {json.dumps(token)}\n\n"
             except Exception as exc:
-                yield f"event: error\\ndata: {json.dumps(str(exc))}\\n\\n"
-                yield "event: done\\ndata: {}\\n\\n"
+                yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"
+                yield "event: done\ndata: {}\n\n"
                 return
 
             answer_text = "".join(answer_parts).strip()
@@ -1034,7 +1691,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
                 answer_text,
                 model or settings.llm_model,
             )
-            yield f"event: usage\\ndata: {json.dumps(usage)}\\n\\n"
+            yield f"event: usage\ndata: {json.dumps(usage)}\n\n"
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": answer_text})
             CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
@@ -1058,7 +1715,10 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     matches = (
         db.query(Chunk, Article, distance, ts_rank)
         .join(Article, Article.id == Chunk.article_id)
-        .filter(Article.owner_id == current_user.id)
+        .filter(
+            Article.group_id == selected_group.id if scope_name == "group" and selected_group else
+            and_(Article.owner_id == current_user.id, Article.group_id.is_(None))
+        )
         .order_by(distance)
         .limit(18)
         .all()
@@ -1125,9 +1785,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
 
     async def event_stream():
         context_b64 = base64.b64encode(context.encode("utf-8")).decode("utf-8")
-        yield f"event: context\\ndata: {json.dumps({'b64': context_b64})}\\n\\n"
+        yield f"event: context\ndata: {json.dumps({'b64': context_b64})}\n\n"
         refs_b64 = base64.b64encode(json.dumps(references).encode("utf-8")).decode("utf-8")
-        yield f"event: refs\\ndata: {json.dumps({'b64': refs_b64})}\\n\\n"
+        yield f"event: refs\ndata: {json.dumps({'b64': refs_b64})}\n\n"
         answer_parts: list[str] = []
         try:
             for token in stream_answer_with_context(
@@ -1138,12 +1798,13 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 provider=provider,
+                inference=inference,
             ):
                 answer_parts.append(token)
-                yield f"event: answer\\ndata: {json.dumps(token)}\\n\\n"
+                yield f"event: answer\ndata: {json.dumps(token)}\n\n"
         except Exception as exc:
-            yield f"event: error\\ndata: {json.dumps(str(exc))}\\n\\n"
-            yield "event: done\\ndata: {}\\n\\n"
+            yield f"event: error\ndata: {json.dumps(str(exc))}\n\n"
+            yield "event: done\ndata: {}\n\n"
             return
 
         answer_text = "".join(answer_parts).strip()
@@ -1154,7 +1815,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
             answer_text,
             model or settings.llm_model,
         )
-        yield f"event: usage\\ndata: {json.dumps(usage)}\\n\\n"
+        yield f"event: usage\ndata: {json.dumps(usage)}\n\n"
         history.append({"role": "user", "content": question})
         history.append({"role": "assistant", "content": answer_text})
         CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
@@ -1171,7 +1832,8 @@ def article_detail(article_id: str, request: Request, db: Session = Depends(get_
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article or article.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not article or not _article_accessible(article, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
     sources = (
         db.query(Source)
@@ -1193,6 +1855,8 @@ def article_detail(article_id: str, request: Request, db: Session = Depends(get_
         source_links.append({"id": source.id, "name": name})
     folder_path = article.metadata_.get("folder_path") or "Root"
     folder_id = article.folder_id
+    selected_group = article.group if article.group_id else None
+    effective_view = _effective_article_view(article)
     return templates.TemplateResponse(
         "article_detail.html",
         _template_context(
@@ -1203,63 +1867,83 @@ def article_detail(article_id: str, request: Request, db: Session = Depends(get_
             sources=source_links,
             folder_path=folder_path,
             folder_id=str(folder_id) if folder_id else None,
+            scope="group" if selected_group else "personal",
+            selected_group=selected_group,
+            comments=effective_view["comments"],
+            effective_summary=effective_view["summary"],
+            effective_content=effective_view["content_text"],
+            has_effective_override=effective_view["has_override"],
         ),
     )
 
 
 @app.get("/articles/{article_id}/edit", response_class=HTMLResponse)
 def article_edit(article_id: str, request: Request, db: Session = Depends(get_db)):
-    session, current_user = _get_session_and_user(request, db)
+    _session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
-    article = db.get(Article, article_id)
-    if not article or article.owner_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Article not found")
-    return templates.TemplateResponse(
-        "article_edit.html", _template_context(request, current_user, session, article=article)
-    )
+    return RedirectResponse(url=f"/articles/{article_id}", status_code=303)
 
 
 @app.post("/articles/{article_id}/edit")
 def article_edit_submit(
     article_id: str,
     request: Request,
-    title: str = Form(...),
-    summary: str = Form(...),
-    metadata_json: str = Form("{}"),
     db: Session = Depends(get_db),
 ):
-    session, current_user = _get_session_and_user(request, db)
+    return RedirectResponse(url=f"/articles/{article_id}", status_code=303)
+
+
+@app.post("/articles/{article_id}/comments")
+def article_comment_submit(
+    article_id: str,
+    request: Request,
+    mode: str = Form(...),
+    comment_text: str = Form(""),
+    replacement_summary: str = Form(""),
+    replacement_content: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    _session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article or article.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not article or not _article_accessible(article, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
 
-    version_number = len(article.versions) + 1
-    db.add(
-        ArticleVersion(
-            article_id=article.id,
-            version=version_number,
-            title=article.title,
-            summary=article.summary,
-            content_text=article.content_text,
-            metadata_=article.metadata_,
+    selected_mode = mode.strip().lower()
+    if selected_mode not in {"augment", "supersede"}:
+        raise HTTPException(status_code=400, detail="Invalid comment mode")
+
+    comment_text = comment_text.strip()
+    replacement_summary = replacement_summary.strip()
+    replacement_content = replacement_content.strip()
+    if selected_mode == "augment" and not comment_text:
+        raise HTTPException(status_code=400, detail="Comment text is required for augment mode")
+    if selected_mode == "supersede" and not (replacement_summary or replacement_content or comment_text):
+        raise HTTPException(
+            status_code=400, detail="Provide replacement summary/content or context when superseding"
         )
+
+    metadata = dict(article.metadata_ or {})
+    comments = list(metadata.get("comments") or [])
+    comments.append(
+        {
+            "id": str(uuid.uuid4()),
+            "mode": selected_mode,
+            "author_email": current_user.email,
+            "created_at": now_utc().isoformat(),
+            "comment_text": comment_text,
+            "replacement_summary": replacement_summary,
+            "replacement_content": replacement_content,
+        }
     )
-
-    try:
-        metadata = json.loads(metadata_json) if metadata_json else {}
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid metadata JSON")
-
-    article.title = title
-    article.summary = summary
+    metadata["comments"] = comments
     article.metadata_ = metadata
     db.add(article)
     db.commit()
-
-    return RedirectResponse(url=f"/articles/{article_id}", status_code=303)
+    return RedirectResponse(url=f"/articles/{article_id}#comments", status_code=303)
 
 
 @app.post("/articles/{article_id}/delete")
@@ -1268,7 +1952,8 @@ def article_delete(article_id: str, request: Request, db: Session = Depends(get_
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     article = db.get(Article, article_id)
-    if not article or article.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not article or not _article_accessible(article, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
     db.delete(article)
     db.commit()
@@ -1282,7 +1967,8 @@ def download_source(article_id: str, source_id: str, request: Request, db: Sessi
         return RedirectResponse(url="/login", status_code=303)
 
     article = db.get(Article, article_id)
-    if not article or article.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not article or not _article_accessible(article, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
 
     source = db.get(Source, source_id)
@@ -1313,12 +1999,29 @@ def download_source(article_id: str, source_id: str, request: Request, db: Sessi
 
 
 @app.get("/articles", response_class=HTMLResponse)
-def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optional[str] = None):
+def files_ui(
+    request: Request,
+    db: Session = Depends(get_db),
+    folder_id: Optional[str] = None,
+    day: Optional[str] = None,
+    scope: Optional[str] = None,
+    group_id: Optional[str] = None,
+):
     session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
 
-    folders = db.query(Folder).filter(Folder.owner_id == current_user.id).all()
+    scope_name, selected_group = _resolve_scope(db, current_user, scope, group_id)
+    groups = _user_groups(db, current_user)
+
+    if scope_name == "group" and selected_group:
+        folders = db.query(Folder).filter(Folder.group_id == selected_group.id).all()
+    else:
+        folders = (
+            db.query(Folder)
+            .filter(Folder.owner_id == current_user.id, Folder.group_id.is_(None))
+            .all()
+        )
     folder_tree = _build_folder_tree(folders)
     folder_path_by_id = _folder_paths_map(folders)
 
@@ -1327,16 +2030,34 @@ def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optiona
         try:
             candidate = uuid.UUID(folder_id)
             folder = db.get(Folder, candidate)
-            if folder and folder.owner_id == current_user.id:
-                active_folder_id = candidate
+            if folder:
+                if scope_name == "group" and selected_group:
+                    if folder.group_id == selected_group.id:
+                        active_folder_id = candidate
+                elif folder.owner_id == current_user.id and folder.group_id is None:
+                    active_folder_id = candidate
         except ValueError:
             active_folder_id = None
 
-    articles_query = db.query(Article).filter(Article.owner_id == current_user.id)
-    if active_folder_id:
-        articles_query = articles_query.filter(Article.folder_id == active_folder_id)
+    if scope_name == "group" and selected_group:
+        articles_query = db.query(Article).filter(Article.group_id == selected_group.id)
     else:
-        articles_query = articles_query.filter(Article.folder_id.is_(None))
+        articles_query = db.query(Article).filter(
+            Article.owner_id == current_user.id, Article.group_id.is_(None)
+        )
+    selected_day = None
+    if day:
+        try:
+            selected_day = datetime.fromisoformat(day).date()
+        except ValueError:
+            selected_day = None
+    if selected_day:
+        articles_query = articles_query.filter(func.date(Article.created_at) == selected_day)
+    if not selected_day:
+        if active_folder_id:
+            articles_query = articles_query.filter(Article.folder_id == active_folder_id)
+        else:
+            articles_query = articles_query.filter(Article.folder_id.is_(None))
     articles = articles_query.order_by(Article.updated_at.desc()).all()
     version_counts: dict[uuid.UUID, int] = {}
     article_folder_paths: dict[uuid.UUID, str] = {}
@@ -1362,6 +2083,10 @@ def files_ui(request: Request, db: Session = Depends(get_db), folder_id: Optiona
             session,
             folders=folder_tree,
             active_folder_id=str(active_folder_id) if active_folder_id else None,
+            selected_day=selected_day.isoformat() if selected_day else None,
+            scope=scope_name,
+            selected_group=selected_group,
+            groups=groups,
             articles=articles,
             version_counts=version_counts,
             folder_paths=article_folder_paths,
@@ -1374,11 +2099,19 @@ def create_folder(
     request: Request,
     name: str = Form(...),
     parent_id: Optional[str] = Form(None),
+    group_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     _session, current_user = _get_session_and_user(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+
+    selected_group: Optional[Group] = None
+    if group_id:
+        scope_name, group = _resolve_scope(db, current_user, "group", group_id)
+        if scope_name != "group" or not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        selected_group = group
 
     parent_uuid: Optional[uuid.UUID] = None
     if parent_id:
@@ -1388,15 +2121,26 @@ def create_folder(
             parent_uuid = None
     if parent_uuid:
         parent = db.get(Folder, parent_uuid)
-        if not parent or parent.owner_id != current_user.id:
+        if not parent or not _folder_accessible(parent, current_user, _group_ids_for_user(db, current_user)):
             raise HTTPException(status_code=404, detail="Parent folder not found")
+        if selected_group and parent.group_id != selected_group.id:
+            raise HTTPException(status_code=400, detail="Parent folder is in a different group")
+        if not selected_group and parent.group_id is not None:
+            raise HTTPException(status_code=400, detail="Parent folder is in a group")
 
     folder_name = name.strip()
     if not folder_name:
         raise HTTPException(status_code=400, detail="Folder name is required")
-    db.add(Folder(owner_id=current_user.id, parent_id=parent_uuid, name=folder_name))
+    db.add(
+        Folder(
+            owner_id=current_user.id,
+            group_id=selected_group.id if selected_group else None,
+            parent_id=parent_uuid,
+            name=folder_name,
+        )
+    )
     db.commit()
-    _sync_article_folder_metadata(db, current_user.id)
+    _sync_article_folder_metadata(db, current_user.id, selected_group.id if selected_group else None)
     db.commit()
     return RedirectResponse(url="/articles", status_code=303)
 
@@ -1407,12 +2151,13 @@ def rename_folder(folder_id: str, request: Request, name: str = Form(...), db: S
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     folder = db.get(Folder, folder_id)
-    if not folder or folder.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not folder or not _folder_accessible(folder, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Folder not found")
     folder.name = name.strip()
     db.add(folder)
     db.commit()
-    _sync_article_folder_metadata(db, current_user.id)
+    _sync_article_folder_metadata(db, current_user.id, folder.group_id)
     db.commit()
     return RedirectResponse(url="/articles", status_code=303)
 
@@ -1423,11 +2168,12 @@ def delete_folder(folder_id: str, request: Request, db: Session = Depends(get_db
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     folder = db.get(Folder, folder_id)
-    if not folder or folder.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not folder or not _folder_accessible(folder, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Folder not found")
     db.delete(folder)
     db.commit()
-    _sync_article_folder_metadata(db, current_user.id)
+    _sync_article_folder_metadata(db, current_user.id, folder.group_id)
     db.commit()
     return RedirectResponse(url="/articles", status_code=303)
 
@@ -1454,7 +2200,8 @@ async def move_folder(folder_id: str, request: Request, db: Session = Depends(ge
 
     target_parent = payload.get("parent_id")
     folder = db.get(Folder, folder_id)
-    if not folder or folder.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not folder or not _folder_accessible(folder, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Folder not found")
 
     parent_uuid: Optional[uuid.UUID] = None
@@ -1466,15 +2213,17 @@ async def move_folder(folder_id: str, request: Request, db: Session = Depends(ge
 
     if parent_uuid:
         parent = db.get(Folder, parent_uuid)
-        if not parent or parent.owner_id != current_user.id:
+        if not parent or not _folder_accessible(parent, current_user, group_ids):
             raise HTTPException(status_code=404, detail="Parent folder not found")
         if parent.id == folder.id:
             raise HTTPException(status_code=400, detail="Cannot move into itself")
+        if parent.group_id != folder.group_id:
+            raise HTTPException(status_code=400, detail="Parent folder is in a different group")
 
     folder.parent_id = parent_uuid
     db.add(folder)
     db.commit()
-    _sync_article_folder_metadata(db, current_user.id)
+    _sync_article_folder_metadata(db, current_user.id, folder.group_id)
     db.commit()
     return {"status": "ok"}
 
@@ -1500,7 +2249,8 @@ async def move_article(article_id: str, request: Request, db: Session = Depends(
         except Exception:
             folder_id = None
     article = db.get(Article, article_id)
-    if not article or article.owner_id != current_user.id:
+    group_ids = _group_ids_for_user(db, current_user)
+    if not article or not _article_accessible(article, current_user, group_ids):
         raise HTTPException(status_code=404, detail="Article not found")
 
     folder_uuid: Optional[uuid.UUID] = None
@@ -1512,8 +2262,10 @@ async def move_article(article_id: str, request: Request, db: Session = Depends(
 
     if folder_uuid:
         folder = db.get(Folder, folder_uuid)
-        if not folder or folder.owner_id != current_user.id:
+        if not folder or not _folder_accessible(folder, current_user, group_ids):
             raise HTTPException(status_code=404, detail="Folder not found")
+        if folder.group_id != article.group_id:
+            raise HTTPException(status_code=400, detail="Folder is in a different group")
 
     article.folder_id = folder_uuid
     if article.metadata_ is None:

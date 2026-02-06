@@ -1,4 +1,4 @@
-# RAG Email MVP
+# Simplr
 
 A Retrieval-Augmented Generation (RAG) web application that ingests inbound emails via webhooks, extracts text and PDF content, and creates a searchable knowledge base with hybrid search (semantic + lexical) and conversational AI capabilities.
 
@@ -43,7 +43,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 ### 1. Clone and Setup
 
 ```bash
-cd rag-email-mvp
+cd simplr
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -176,7 +176,7 @@ pytest tests/test_mailersend.py -v
 ## 📦 Project Structure
 
 ```
-rag-email-mvp/
+simplr/
 ├── app/
 │   ├── __init__.py
 │   ├── main.py           # FastAPI application & routes

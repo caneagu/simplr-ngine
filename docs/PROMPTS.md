@@ -1,6 +1,6 @@
 # LLM Prompts Documentation
 
-This document documents all LLM prompts used in the RAG Email MVP system and provides guidance on optimizing them for better RAG accuracy and response quality.
+This document documents all LLM prompts used in the Simplr system and provides guidance on optimizing them for better RAG accuracy and response quality.
 
 ## Current Prompt Locations
 
