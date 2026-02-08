@@ -421,13 +421,14 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
         if needs_reply:
             primary = processed_articles[0]
             article_url = f"{settings.app_base_url.rstrip('/')}/articles/{primary.id}"
+            reply_summary_usage = (primary.metadata_ or {}).get("summary_tokens")
             try:
                 reply_message_id = send_article_reply(
                     sender_user.email,
                     primary.title,
                     primary.summary,
                     article_url,
-                    summary_usage,
+                    reply_summary_usage,
                 )
             except RuntimeError:
                 reply_message_id = None
