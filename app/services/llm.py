@@ -63,8 +63,15 @@ def get_llm(
     if active_provider == "openrouter" and model_name and "/" not in model_name:
         model_name = f"openai/{model_name}"
     # OpenAI expects bare model names (for example: gpt-4o-mini).
-    if active_provider == "openai" and model_name and model_name.startswith("openai/"):
-        model_name = model_name.split("/", 1)[1]
+    # The chat UI can send provider-qualified IDs from OpenRouter lists; sanitize them.
+    if active_provider == "openai" and model_name:
+        if "/" in model_name:
+            model_name = model_name.split("/", 1)[1]
+        if ":" in model_name:
+            model_name = model_name.split(":", 1)[0]
+        allowed_prefixes = ("gpt-", "o1", "o3", "o4", "text-embedding-", "omni-")
+        if not model_name.startswith(allowed_prefixes):
+            model_name = settings.llm_model
     temp_value = temperature if temperature is not None else 0.2
     extra = {}
     if max_tokens is not None:

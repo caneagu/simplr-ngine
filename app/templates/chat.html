@@ -665,7 +665,8 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         question,
-        model: modelSelect ? modelSelect.value || null : null,
+        // Revert to stable behavior: always use backend default model from settings.
+        model: null,
         provider: null,
         temperature: getSelectedTemperature(),
         max_tokens: maxTokens,
