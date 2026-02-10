@@ -1644,6 +1644,11 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
     scope_name, selected_group = _resolve_scope(db, current_user, scope, group_id)
 
     stats_answer = _maybe_stats_answer(question, current_user, db)
+    stream_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
     if stats_answer:
         async def event_stream():
             context_b64 = base64.b64encode("".encode("utf-8")).decode("utf-8")
@@ -1654,7 +1659,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
             yield f"event: usage\ndata: {json.dumps({'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})}\n\n"
             yield "event: done\ndata: {}\n\n"
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/event-stream", headers=stream_headers)
 
     session_id = _get_session_id(request)
     history = CHAT_MEMORY.get(session_id, [])
@@ -1697,7 +1702,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
             CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
             yield "event: done\ndata: {}\n\n"
 
-        response = StreamingResponse(event_stream(), media_type="text/event-stream")
+        response = StreamingResponse(event_stream(), media_type="text/event-stream", headers=stream_headers)
         response.set_cookie("rag_session_id", session_id, max_age=60 * 60 * 6)
         return response
 
@@ -1821,7 +1826,7 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
         CHAT_MEMORY[session_id] = history[-CHAT_MEMORY_LIMIT * 2 :]
         yield "event: done\ndata: {}\n\n"
 
-    response = StreamingResponse(event_stream(), media_type="text/event-stream")
+    response = StreamingResponse(event_stream(), media_type="text/event-stream", headers=stream_headers)
     response.set_cookie("rag_session_id", session_id, max_age=60 * 60 * 6)
     return response
 
