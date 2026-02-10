@@ -253,6 +253,8 @@
     queuedRender: null,
     pendingRender: null,
     modelCatalog: [],
+    totalTokens: 0,
+    tokenStorageKey: '',
   };
 
   const TEMPERATURE_PRESETS = [
@@ -288,6 +290,48 @@
     } catch {
       return '';
     }
+  }
+
+  function readCookie(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function tokenStorageKey() {
+    const sessionId = readCookie('rag_session_id') || 'anonymous';
+    return `chat_total_tokens:${sessionId}`;
+  }
+
+  function refreshTokenStorageKey() {
+    const nextKey = tokenStorageKey();
+    if (state.tokenStorageKey === nextKey) return;
+    if (state.tokenStorageKey) {
+      const previous = sessionStorage.getItem(state.tokenStorageKey);
+      const current = sessionStorage.getItem(nextKey);
+      if (previous !== null && current === null) {
+        sessionStorage.setItem(nextKey, previous);
+      }
+    }
+    state.tokenStorageKey = nextKey;
+  }
+
+  function renderTokenCount() {
+    if (!tokenCountLabel) return;
+    tokenCountLabel.textContent = `Tokens: ${state.totalTokens}`;
+  }
+
+  function loadTokenCount() {
+    refreshTokenStorageKey();
+    const raw = sessionStorage.getItem(state.tokenStorageKey);
+    const parsed = Number(raw);
+    state.totalTokens = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    renderTokenCount();
+  }
+
+  function persistTokenCount() {
+    refreshTokenStorageKey();
+    sessionStorage.setItem(state.tokenStorageKey, String(state.totalTokens));
   }
 
   function addBubble(text, role) {
@@ -334,22 +378,51 @@
       return;
     }
 
+    const byArticle = new Map();
+
     refs.forEach((ref) => {
       const refIndex = Number(ref.index);
       if (!Number.isFinite(refIndex) || refIndex <= 0) return;
       state.refsByIndex[refIndex] = ref;
+      const articleId = String(ref.id || '').trim();
+      const key = articleId || `unknown-${refIndex}`;
+      const current = byArticle.get(key) || {
+        id: articleId,
+        title: '',
+        excerpt: '',
+        indices: [],
+        firstIndex: refIndex,
+      };
+      current.indices.push(refIndex);
+      if (!current.title && ref.title) current.title = String(ref.title);
+      if (!current.excerpt) {
+        const rawText = String(ref.excerpt || ref.summary || '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        current.excerpt = rawText.length > 160 ? `${rawText.slice(0, 160)}...` : rawText;
+      }
+      if (refIndex < current.firstIndex) current.firstIndex = refIndex;
+      byArticle.set(key, current);
+    });
 
+    Array.from(byArticle.values())
+      .sort((a, b) => a.firstIndex - b.firstIndex)
+      .forEach((entry) => {
       const li = document.createElement('li');
-      li.id = `ref-${refIndex}`;
+      li.id = `ref-${entry.firstIndex}`;
 
       const link = document.createElement('a');
       link.className = 'block rounded-lg border border-gray-200 bg-white px-4 py-3 transition hover:border-blue-100 hover:text-blue-600';
-      link.href = `/articles/${ref.id}`;
-      link.textContent = `[${refIndex}] ${ref.title || 'Untitled'}`;
+      link.href = entry.id ? `/articles/${entry.id}` : '#';
+      const labels = entry.indices
+        .sort((a, b) => a - b)
+        .map((idx) => `[${idx}]`)
+        .join(' ');
+      link.textContent = `${labels} ${entry.title || 'Untitled'}`;
 
       const excerpt = document.createElement('p');
       excerpt.className = 'mt-2 text-xs text-slate-500';
-      excerpt.textContent = ref.summary || ref.excerpt || '';
+      excerpt.textContent = entry.excerpt;
       link.appendChild(excerpt);
 
       li.appendChild(link);
@@ -397,7 +470,7 @@
         if (ref) {
           const a = document.createElement('a');
           a.className = 'citation-link';
-          a.href = `/articles/${ref.id}#ref-${index}`;
+          a.href = `/articles/${ref.id}`;
           a.textContent = normalized;
           frag.appendChild(a);
           changed = true;
@@ -692,7 +765,6 @@
 
   async function streamAnswer(question) {
     setError('');
-    if (tokenCountLabel) tokenCountLabel.textContent = 'Tokens: 0';
 
     addBubble(question, 'user');
     const answerBubble = addBubble('', 'assistant');
@@ -759,8 +831,13 @@
         }
         if (eventName === 'usage') {
           const usage = safeJsonParse(data, null);
-          if (usage && tokenCountLabel && typeof usage.total_tokens !== 'undefined') {
-            tokenCountLabel.textContent = `Tokens: ${usage.total_tokens}`;
+          if (usage && typeof usage.total_tokens !== 'undefined') {
+            const turnTokens = Number(usage.total_tokens);
+            if (Number.isFinite(turnTokens) && turnTokens >= 0) {
+              state.totalTokens += turnTokens;
+              renderTokenCount();
+              persistTokenCount();
+            }
           }
           continue;
         }
@@ -874,6 +951,7 @@
     maxTokensInput.addEventListener('blur', normalizeTokenInput);
   }
   updateTemperatureLabel();
+  loadTokenCount();
   loadModels();
 </script>
 {% endblock %}

@@ -1522,7 +1522,9 @@ def chat_submit(
     sources: list[dict[str, Any]] = []
     seen_articles: set[uuid.UUID] = set()
     for chunk, article, _dist in matches:
-        if article.id not in seen_articles and len(seen_articles) >= CHAT_ARTICLE_LIMIT:
+        if article.id in seen_articles:
+            continue
+        if len(seen_articles) >= CHAT_ARTICLE_LIMIT:
             continue
         seen_articles.add(article.id)
         folder_path = article.metadata_.get("folder_path") or "Root"
@@ -1741,7 +1743,9 @@ async def chat_stream(request: Request, db: Session = Depends(get_db)):
         if semantic < CHAT_MIN_SEMANTIC and lexical < CHAT_MIN_LEXICAL:
             continue
 
-        if article.id not in seen_articles and len(seen_articles) >= CHAT_ARTICLE_LIMIT:
+        if article.id in seen_articles:
+            continue
+        if len(seen_articles) >= CHAT_ARTICLE_LIMIT:
             continue
         seen_articles.add(article.id)
         folder_path = article.metadata_.get("folder_path") or "Root"

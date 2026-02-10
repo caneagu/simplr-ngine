@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ title or "Simplr" }}</title>
+    <script>
+      (function () {
+        try {
+          const isMobile = window.matchMedia("(max-width: 1024px)").matches;
+          if (isMobile) {
+            document.documentElement.style.setProperty("--sidebar-width", "0px");
+            return;
+          }
+          const collapsed = localStorage.getItem("simplr_sidebar_collapsed") === "1";
+          if (collapsed) {
+            document.documentElement.classList.add("sidebar-collapsed");
+          }
+          document.documentElement.style.setProperty("--sidebar-width", collapsed ? "78px" : "256px");
+        } catch (error) {}
+      })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap"
@@ -13,8 +29,17 @@
       body {
         font-family: "Inter", sans-serif;
       }
+      :root {
+        --sidebar-width: 256px;
+      }
       .app-shell {
         min-height: 100vh;
+      }
+      #app-sidebar {
+        width: var(--sidebar-width) !important;
+      }
+      #app-main {
+        margin-left: var(--sidebar-width) !important;
       }
       .summary-clamp {
         display: -webkit-box;
@@ -92,30 +117,32 @@
         box-shadow: none !important;
       }
 
-      body.sidebar-collapsed #app-sidebar {
+      .sidebar-collapsed #app-sidebar {
         width: 78px;
+        transition: none !important;
       }
-      body.sidebar-collapsed #app-main {
+      .sidebar-collapsed #app-main {
         margin-left: 78px;
+        transition: none !important;
       }
-      body.sidebar-collapsed .sidebar-collapse-hide {
+      .sidebar-collapsed .sidebar-collapse-hide {
         display: none !important;
       }
-      body.sidebar-collapsed .sidebar-collapse-only {
+      .sidebar-collapsed .sidebar-collapse-only {
         display: inline-flex;
       }
-      body.sidebar-collapsed .side-nav-link {
+      .sidebar-collapsed .side-nav-link {
         justify-content: center;
         padding-left: 0;
         padding-right: 0;
       }
-      body.sidebar-collapsed .account-chip {
+      .sidebar-collapsed .account-chip {
         justify-content: center;
       }
-      body.sidebar-collapsed .account-chip-text {
+      .sidebar-collapsed .account-chip-text {
         display: none;
       }
-      body.sidebar-collapsed .account-chip {
+      .sidebar-collapsed .account-chip {
         gap: 0;
       }
       body.sidebar-initializing #app-sidebar,
@@ -216,6 +243,7 @@
     <script>
       (function () {
         const body = document.body;
+        const root = document.documentElement;
         const edgeToggle = document.getElementById("sidebar-edge-toggle");
         const edgeOpen = document.getElementById("sidebar-edge-open");
         const edgeClosed = document.getElementById("sidebar-edge-closed");
@@ -226,9 +254,13 @@
         const key = "simplr_sidebar_collapsed";
 
         const applyDesktopState = () => {
-          if (mq.matches) return;
+          if (mq.matches) {
+            root.style.setProperty("--sidebar-width", "0px");
+            return;
+          }
           const collapsed = localStorage.getItem(key) === "1";
-          body.classList.toggle("sidebar-collapsed", collapsed);
+          root.classList.toggle("sidebar-collapsed", collapsed);
+          root.style.setProperty("--sidebar-width", collapsed ? "78px" : "256px");
           if (edgeOpen && edgeClosed) {
             edgeOpen.classList.toggle("hidden", collapsed);
             edgeClosed.classList.toggle("hidden", !collapsed);
@@ -240,8 +272,8 @@
             body.classList.toggle("sidebar-open");
             return;
           }
-          const nextCollapsed = !body.classList.contains("sidebar-collapsed");
-          body.classList.toggle("sidebar-collapsed", nextCollapsed);
+          const nextCollapsed = !root.classList.contains("sidebar-collapsed");
+          root.classList.toggle("sidebar-collapsed", nextCollapsed);
           localStorage.setItem(key, nextCollapsed ? "1" : "0");
           applyDesktopState();
         };
