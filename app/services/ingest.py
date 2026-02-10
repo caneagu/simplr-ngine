@@ -21,6 +21,8 @@ from app.services.llm import categorize_and_extract, extract_insights, summarize
 from app.services.mailersend import InboundEmail
 from app.services.pdf import extract_pdf_text
 
+PERSONAL_INBOX_ALIASES = {"me"}
+
 
 def _dedupe_key_for(inbound: InboundEmail) -> str | None:
     if inbound.message_id:
@@ -89,8 +91,22 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
         for recipient in inbound.recipients
         if recipient and "@" in recipient
     }
+
+    recipient_slugs = {recipient.split("@", 1)[0].lower() for recipient in recipient_emails}
+    groups = []
+    if recipient_slugs:
+        groups = db.query(Group).filter(Group.slug.in_(list(recipient_slugs))).all()
+    group_slugs = {group.slug.lower() for group in groups}
+
     target_users: dict[str, User] = {}
+    # Route personal inbox aliases (e.g. me@domain) to the sender's personal knowledge base.
+    if PERSONAL_INBOX_ALIASES.intersection(recipient_slugs):
+        target_users[sender_user.email] = sender_user
+
     for email in recipient_emails:
+        local_part = email.split("@", 1)[0].lower()
+        if local_part in PERSONAL_INBOX_ALIASES or local_part in group_slugs:
+            continue
         user = db.query(User).filter(User.email == email).first()
         if not user:
             user = User(email=email)
@@ -103,13 +119,8 @@ def ingest_email(inbound: InboundEmail, db: Session) -> Article:
                 if not user:
                     continue
         target_users[email] = user
-    if not target_users:
+    if not target_users and not groups:
         target_users[sender_user.email] = sender_user
-
-    recipient_slugs = {recipient.split("@", 1)[0].lower() for recipient in recipient_emails}
-    groups = []
-    if recipient_slugs:
-        groups = db.query(Group).filter(Group.slug.in_(list(recipient_slugs))).all()
 
     storage_dir = Path(settings.storage_dir).resolve()
     attachments_dir = storage_dir / "attachments"
