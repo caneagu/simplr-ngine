@@ -56,9 +56,15 @@ def get_llm(
         return None
     model_name = model or settings.llm_model
     active_provider = (provider or (inference or {}).get("provider") or settings.llm_provider).strip().lower()
+    base_url = (kwargs.get("base_url") or "").strip().lower()
+    if "openrouter" in base_url:
+        active_provider = "openrouter"
     # OpenRouter expects provider-prefixed model IDs (for example: openai/gpt-4o-mini).
     if active_provider == "openrouter" and model_name and "/" not in model_name:
         model_name = f"openai/{model_name}"
+    # OpenAI expects bare model names (for example: gpt-4o-mini).
+    if active_provider == "openai" and model_name and model_name.startswith("openai/"):
+        model_name = model_name.split("/", 1)[1]
     temp_value = temperature if temperature is not None else 0.2
     extra = {}
     if max_tokens is not None:
