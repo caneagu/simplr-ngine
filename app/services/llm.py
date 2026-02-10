@@ -55,6 +55,10 @@ def get_llm(
     if not kwargs:
         return None
     model_name = model or settings.llm_model
+    active_provider = (provider or (inference or {}).get("provider") or settings.llm_provider).strip().lower()
+    # OpenRouter expects provider-prefixed model IDs (for example: openai/gpt-4o-mini).
+    if active_provider == "openrouter" and model_name and "/" not in model_name:
+        model_name = f"openai/{model_name}"
     temp_value = temperature if temperature is not None else 0.2
     extra = {}
     if max_tokens is not None:
