@@ -104,7 +104,8 @@
       </div>
       <div>
         <label class="text-xs uppercase tracking-wide text-slate-400">Model</label>
-        <select class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model">
+        <input class="mt-2 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model-search" type="text" placeholder="Search OpenRouter model..." />
+        <select class="mt-2 h-40 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm" id="chat-model" size="6">
           <option value="">Default (settings)</option>
         </select>
       </div>
@@ -229,6 +230,7 @@
   const errorBox = document.getElementById('chat-error');
   const contextBox = document.getElementById('chat-context');
   const modelSelect = document.getElementById('chat-model');
+  const modelSearchInput = document.getElementById('chat-model-search');
   const inferenceSelect = document.getElementById('chat-inference');
   const temperatureInput = document.getElementById('chat-temperature');
   const temperatureLabel = document.getElementById('chat-temperature-label');
@@ -250,6 +252,7 @@
     lastAnswerContent: null,
     queuedRender: null,
     pendingRender: null,
+    modelCatalog: [],
   };
 
   const TEMPERATURE_PRESETS = [
@@ -569,6 +572,18 @@
     return { eventName, data: dataLines.join('\n') };
   }
 
+  function getSelectedModelId() {
+    if (!modelSelect) return null;
+    const value = (modelSelect.value || '').trim();
+    return value || null;
+  }
+
+  function selectedModelProvider(modelId) {
+    if (!modelId) return null;
+    if (modelId.includes('/')) return 'openrouter';
+    return null;
+  }
+
   function updateTemperatureLabel() {
     if (!temperatureInput || !temperatureLabel) return;
     const index = Math.max(0, Math.min(TEMPERATURE_PRESETS.length - 1, Number(temperatureInput.value)));
@@ -637,6 +652,7 @@
       ? curated
       : models.slice(0, FALLBACK_MODEL_LIMIT).map((model) => ({ id: model, label: model }));
 
+    state.modelCatalog = modelsToShow;
     modelsToShow.forEach((model) => {
       const opt = document.createElement('option');
       opt.value = model.id;
@@ -644,8 +660,33 @@
       modelSelect.appendChild(opt);
     });
 
-    if (!modelSelect.value && modelsToShow.length > 0) {
-      modelSelect.value = modelsToShow[0].id;
+    if (!modelSelect.value) modelSelect.value = '';
+    filterModelOptions();
+  }
+
+  function filterModelOptions() {
+    if (!modelSelect) return;
+    const query = (modelSearchInput ? modelSearchInput.value : '').trim().toLowerCase();
+    const previous = modelSelect.value || '';
+    modelSelect.innerHTML = '<option value="">Default (settings)</option>';
+    const source = state.modelCatalog || [];
+    const filtered = !query
+      ? source
+      : source.filter((item) => item.id.toLowerCase().includes(query) || item.label.toLowerCase().includes(query));
+
+    filtered.forEach((model) => {
+      const opt = document.createElement('option');
+      opt.value = model.id;
+      opt.textContent = model.label;
+      modelSelect.appendChild(opt);
+    });
+
+    if (previous && filtered.some((item) => item.id === previous)) {
+      modelSelect.value = previous;
+    } else if (!query && previous === '') {
+      modelSelect.value = '';
+    } else {
+      modelSelect.value = '';
     }
   }
 
@@ -660,14 +701,14 @@
     let answerText = '';
     const maxTokens = normalizeTokenInput();
 
+    const selectedModel = getSelectedModelId();
     const response = await fetch('/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         question,
-        // Revert to stable behavior: always use backend default model from settings.
-        model: null,
-        provider: null,
+        model: selectedModel,
+        provider: selectedModelProvider(selectedModel),
         temperature: getSelectedTemperature(),
         max_tokens: maxTokens,
         ground: groundingToggle ? groundingToggle.checked : true,
@@ -678,8 +719,10 @@
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      setError(errorText || 'Request failed');
+      const rawError = await response.text();
+      const parsedError = safeJsonParse(rawError, null);
+      const detail = parsedError && typeof parsedError.detail !== 'undefined' ? parsedError.detail : rawError;
+      setError(typeof detail === 'string' ? detail : JSON.stringify(detail));
       answerBubble.remove();
       return;
     }
@@ -698,6 +741,7 @@
       const { value, done } = await reader.read();
       if (done) break;
       sseBuffer += decoder.decode(value, { stream: true });
+      sseBuffer = sseBuffer.replace(/\r\n/g, '\n');
 
       let splitIndex = sseBuffer.indexOf('\n\n');
       while (splitIndex !== -1) {
@@ -824,6 +868,7 @@
   }
 
   if (temperatureInput) temperatureInput.addEventListener('input', updateTemperatureLabel);
+  if (modelSearchInput) modelSearchInput.addEventListener('input', filterModelOptions);
   if (maxTokensInput) {
     maxTokensInput.addEventListener('change', normalizeTokenInput);
     maxTokensInput.addEventListener('blur', normalizeTokenInput);
